@@ -91,7 +91,13 @@ export function quoteWindowsArg(value, doubleEscape = false) {
  * A Windows path cannot contain `"`, so quoting the target is unambiguous.
  */
 export function buildCmdLine(resolvedTarget, args = []) {
-  const target = `"${String(resolvedTarget).replace(/"/g, "")}"`;
+  // cmd expands `%NAME%` (and `!NAME!` with delayed expansion) even inside
+  // quotes, and the target is not caret-escaped, so a path carrying either
+  // could run something else. Such a path is refused outright.
+  if (/[%!"\r\n^]/.test(String(resolvedTarget))) {
+    throw new Error(`Refusing to run a batch file whose path cmd would rewrite: ${JSON.stringify(String(resolvedTarget))}`);
+  }
+  const target = `"${String(resolvedTarget)}"`;
   const rest = args.map((arg) => quoteWindowsArg(arg, true));
   return `"${[target, ...rest].join(" ")}"`;
 }

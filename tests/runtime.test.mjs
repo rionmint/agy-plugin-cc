@@ -633,3 +633,41 @@ test("image runs are listed as image, not as a generic run", () => {
   const runs = run("node", [SCRIPT, "runs", "--json"], { cwd: repo, env: pluginDataEnv(pluginDataDir, binDir) });
   assert.equal(JSON.parse(runs.stdout).latestFinished.kindLabel, "image");
 });
+
+test("an image saved from a run that timed out is kept but the run still fails", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "image-timeout");
+
+  const result = run("node", [SCRIPT, "image", "--json", "a boat"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.notEqual(result.status, 0, "a timed-out run is not a success");
+  const payload = JSON.parse(result.stdout);
+  assert.ok(payload.output?.path, "the picture that exists is still saved");
+  assert.ok(fs.existsSync(payload.output.path));
+  assert.ok(payload.agy.failures.some((reason) => /--print-timeout/.test(reason)));
+});
+
+test("a critique whose structured output has the wrong shape fails", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "bad-shape");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
+  run("git", ["add", "a.txt"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.txt"), "b\n");
+
+  const result = run("node", [SCRIPT, "critique"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /unexpected review shape/);
+});

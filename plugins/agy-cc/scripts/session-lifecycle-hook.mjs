@@ -5,7 +5,7 @@ import process from "node:process";
 
 import { terminateProcessTree } from "./lib/process.mjs";
 import { claimJobTerminal, loadState, resolveStateFile, saveState } from "./lib/state.mjs";
-import { OUR_PROCESS_MARKERS, resolveJobKillTargets, SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
+import { buildProcessMarkers, resolveJobKillTargets, SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
@@ -96,7 +96,7 @@ function cleanupSessionJobs(cwd, sessionId) {
       const killTargets = resolveJobKillTargets(job);
       for (const pid of killTargets) {
         try {
-          terminateProcessTree(pid, { expect: OUR_PROCESS_MARKERS });
+          terminateProcessTree(pid, { expect: buildProcessMarkers() });
         } catch {
         }
       }

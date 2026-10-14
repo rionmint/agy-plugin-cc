@@ -26,3 +26,19 @@ What is new for agy:
 - New flags: `--effort`, `--timeout`, `--allow-commands`, repeatable `--add-dir`.
 - A sign-in that headless agy cannot complete is detected and the run stopped at once instead of
   waiting for agy's own one-minute login timeout.
+
+Hardened after an adversarial review (Codex) before release:
+
+- At `init` the bridge also reads back the settings file agy rewrote from what it loaded and stops
+  the run unless it holds exactly this run's rules; a run that never sends `init` fails closed.
+- A start-up that takes over 90 seconds is killed before the settings lock is released; an abandoned
+  lock is reclaimed only when its holder is dead and it is over 150 seconds old, by an atomic
+  move-aside that puts a live lock back.
+- Prompt files go into a fresh `mkdtemp` directory, are opened exclusively, and cleanup removes only
+  what was created, never recursively.
+- A batch-file path that `cmd` would rewrite (`%`, `!`, `^`, quotes) is refused.
+- The automatic follow-up turn only runs when a refused permission is the sole problem, so a lost
+  conversation stays a failure.
+- An image saved from a failed run, and a critique whose structured output has the wrong shape, are
+  reported as failures.
+- `stop` also recognises the `agy.cmd` shim and a binary set through `AGY_BINARY`.

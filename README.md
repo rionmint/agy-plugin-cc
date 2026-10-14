@@ -115,8 +115,10 @@ profile into that home's `settings.json`:
   plugin's home sees your account (measured). Whether that holds on macOS and Linux depends on where
   agy keeps the credential there; `/agy-cc:check` runs `agy models` inside the plugin home and says so
   if it cannot sign in.
-- **Every run is checked at start.** agy reports its permission mode in its first event. A run that
-  did not start in `request-review` — the mode the profile asks for — is stopped.
+- **Every run is checked at start.** When agy reports its first event, the bridge checks that agy
+  started in `request-review` and that the settings file agy rewrote from what it loaded still holds
+  this run's rules. A run that fails either check, never reports that event, or takes more than 90
+  seconds to start is stopped.
 
 There is more — argument validation, the settings lock, run-directory containment, pid checks before
 a kill — in [SECURITY.md](./SECURITY.md), including what is *not* defended.
@@ -141,15 +143,17 @@ cd <repository> && agy -p=<prompt> --output-format stream-json --print-timeout 3
   when `--print-timeout` cut the answer short, and when `--conversation` names a conversation it does
   not have (it starts a new one with only a warning). The bridge reads the `stream-json` events and
   treats each of those as a failure, listed under "agy run problems".
-- **One automatic retry.** When a turn ends only because a permission had to be asked for, the bridge
-  continues the same conversation once, telling agy that the permission stays refused.
+- **One automatic retry.** When a turn ends only because a permission had to be asked for — and
+  nothing else went wrong — the bridge continues the same conversation once, telling agy that the
+  permission stays refused, and says so in the output.
 - **Structured output** for critique uses agy's `--json-schema`; the result comes back as
   `structured_output`, which the bridge prefers over the free text.
-- **Conversations** are agy conversations in the plugin's home. `--resume-last` continues the stored
-  one with `agy --conversation <id>`.
+- **Conversations** are agy conversations in the plugin's home. `--resume-last` continues the latest
+  delegate conversation in the repository with `agy --conversation <id>`.
 - **Images** are drawn by agy's built-in image generator into its conversation folder; the bridge copies
   the newest one out. The file extension follows the bytes (agy draws JPEG) and an existing file is
-  never overwritten.
+  never overwritten. A picture from a run that otherwise failed is saved, and the run is still
+  reported as failed.
 - Background runs record both `bridgePid` (the Node worker) and `agentPid` (the `agy` child).
   `/agy-cc:stop` kills every distinct pid among them, after checking that the pid still looks like one
   of ours.

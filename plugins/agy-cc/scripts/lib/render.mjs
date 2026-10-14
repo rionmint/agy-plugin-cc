@@ -21,7 +21,7 @@ function formatLineRange(finding) {
   return `:${finding.line_start}-${finding.line_end}`;
 }
 
-function validateReviewResultShape(data) {
+export function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
   }
@@ -96,7 +96,7 @@ function formatResumeHint(job) {
   if (!job?.threadId || job.jobClass !== "task") {
     return null;
   }
-  return "/agy-cc:delegate --resume";
+  return "/agy-cc:delegate --resume (continues the latest delegate conversation in this repository)";
 }
 
 function appendFailureLines(lines, failures) {
@@ -455,7 +455,10 @@ export function renderStoredJobResult(job, storedJob) {
     if (!threadId) {
       return output;
     }
-    const resume = jobClass === "task" ? "\nContinue: /agy-cc:delegate --resume" : "";
+    const resume =
+      jobClass === "task"
+        ? "\nContinue: /agy-cc:delegate --resume (continues the latest delegate conversation in this repository)"
+        : "";
     return `${output}\nagy conversation ID: ${threadId}${resume}\n`;
   };
 

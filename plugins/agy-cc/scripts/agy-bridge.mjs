@@ -42,7 +42,6 @@ import {
   generateJobId,
   listJobs,
   patchJobIfActive,
-  removeRunDir,
   resolveRunDir,
   upsertJob,
   writeJobFile
@@ -53,7 +52,7 @@ import {
   createJobProgressUpdater,
   createJobRecord,
   createProgressReporter,
-  OUR_PROCESS_MARKERS,
+  buildProcessMarkers,
   resolveJobKillTargets,
   runTrackedJob,
   SESSION_ID_ENV
@@ -68,7 +67,8 @@ import {
   renderSetupReport,
   renderStatusReport,
   renderStoredJobResult,
-  renderTaskResult
+  renderTaskResult,
+  validateReviewResultShape
 } from "./lib/render.mjs";
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -433,25 +433,20 @@ async function executeReviewRun(request) {
       });
 
   const runId = ensureRunId(request, "review");
-  let run;
-  try {
-    run = await runAgyWithRecovery(context.repoRoot, {
-      prompt,
-      runDir: resolveRunDir(context.repoRoot, runId),
-      // The read-only profile is the safety boundary for a review: writes,
-      // commands, MCP tools and URL actions are all denied by rule.
-      permissionProfile: "read-only",
-      mode: request.mode ?? undefined,
-      model: request.model,
-      effort: request.effort,
-      printTimeout: request.timeout,
-      jsonSchemaPath: structured ? REVIEW_SCHEMA : null,
-      requireResponse: !structured,
-      onProgress: request.onProgress
-    });
-  } finally {
-    removeRunDir(context.repoRoot, runId);
-  }
+  const run = await runAgyWithRecovery(context.repoRoot, {
+    prompt,
+    runDir: resolveRunDir(context.repoRoot, runId),
+    // The read-only profile is the safety boundary for a review: writes,
+    // commands, MCP tools and URL actions are all denied by rule.
+    permissionProfile: "read-only",
+    mode: request.mode ?? undefined,
+    model: request.model,
+    effort: request.effort,
+    printTimeout: request.timeout,
+    jsonSchemaPath: structured ? REVIEW_SCHEMA : null,
+    requireResponse: !structured,
+    onProgress: request.onProgress
+  });
 
   const failures = run.failures;
   if (structured) {
@@ -459,7 +454,8 @@ async function executeReviewRun(request) {
       status: run.status,
       failureMessage: failures.join(" ")
     });
-    const ok = failures.length === 0 && parsed.parsed != null;
+    const shapeError = parsed.parsed != null ? validateReviewResultShape(parsed.parsed) : null;
+    const ok = failures.length === 0 && parsed.parsed != null && !shapeError;
     const payload = {
       review: reviewName,
       target,
@@ -490,6 +486,7 @@ async function executeReviewRun(request) {
         parsed.parsed?.summary ??
         failures[0] ??
         parsed.parseError ??
+        shapeError ??
         firstMeaningfulLine(run.finalMessage, `${reviewName} finished.`),
       jobTitle: `agy ${reviewName}`,
       jobClass: "review",
@@ -556,27 +553,22 @@ async function executeTaskRun(request) {
   const permissionProfile = resolvePermissionProfile({ write, allowCommands: request.allowCommands });
 
   const runId = ensureRunId(request, "run");
-  let run;
-  try {
-    run = await runAgyWithRecovery(workspaceRoot, {
-      prompt,
-      runDir: resolveRunDir(workspaceRoot, runId),
-      resumeConversationId,
-      // Without --write the run uses the read-only profile, which denies
-      // writes and commands by rule. --write allows edits inside the
-      // workspace; --allow-commands additionally allows terminal commands.
-      permissionProfile,
-      mode: write ? undefined : (request.mode ?? undefined),
-      write,
-      model: request.model,
-      effort: request.effort,
-      addDirs: request.addDirs ?? [],
-      printTimeout: request.timeout,
-      onProgress: request.onProgress
-    });
-  } finally {
-    removeRunDir(workspaceRoot, runId);
-  }
+  const run = await runAgyWithRecovery(workspaceRoot, {
+    prompt,
+    runDir: resolveRunDir(workspaceRoot, runId),
+    resumeConversationId,
+    // Without --write the run uses the read-only profile, which denies
+    // writes and commands by rule. --write allows edits inside the
+    // workspace; --allow-commands additionally allows terminal commands.
+    permissionProfile,
+    mode: write ? undefined : (request.mode ?? undefined),
+    write,
+    model: request.model,
+    effort: request.effort,
+    addDirs: request.addDirs ?? [],
+    printTimeout: request.timeout,
+    onProgress: request.onProgress
+  });
 
   const rawOutput = typeof run.finalMessage === "string" ? run.finalMessage : "";
   const failureMessage = run.failures.join("\n");
@@ -686,24 +678,19 @@ async function executeImageRun(request) {
   const startedAt = Date.now();
 
   const runId = ensureRunId(request, "image");
-  let run;
-  try {
-    run = await runAgyWithRecovery(workspaceRoot, {
-      prompt,
-      runDir: resolveRunDir(workspaceRoot, runId),
-      // Drawing needs no write permission: the image lands in agy's own
-      // conversation folder and the bridge copies it out.
-      permissionProfile: "read-only",
-      model: request.model,
-      addDirs,
-      printTimeout: request.timeout ?? DEFAULT_IMAGE_TIMEOUT,
-      requireResponse: false,
-      agyHome: home,
-      onProgress: request.onProgress
-    });
-  } finally {
-    removeRunDir(workspaceRoot, runId);
-  }
+  const run = await runAgyWithRecovery(workspaceRoot, {
+    prompt,
+    runDir: resolveRunDir(workspaceRoot, runId),
+    // Drawing needs no write permission: the image lands in agy's own
+    // conversation folder and the bridge copies it out.
+    permissionProfile: "read-only",
+    model: request.model,
+    addDirs,
+    printTimeout: request.timeout ?? DEFAULT_IMAGE_TIMEOUT,
+    requireResponse: false,
+    agyHome: home,
+    onProgress: request.onProgress
+  });
 
   // The answer text can say "still generating" while the file is already
   // there, so the file decides whether the run worked.
@@ -741,7 +728,7 @@ async function executeImageRun(request) {
   payload.output = { path: output, bytes: bytes.length, type: detected.type, source: source.path };
 
   return {
-    exitStatus: 0,
+    exitStatus: run.failures.length === 0 ? 0 : 1,
     threadId: run.threadId,
     turnId: null,
     payload,
@@ -751,7 +738,7 @@ async function executeImageRun(request) {
       warnings: [...run.failures, ...buildRecoveryNotes(run)],
       response: run.finalMessage
     }),
-    summary: `Saved ${output}`,
+    summary: run.failures.length === 0 ? `Saved ${output}` : `Saved ${output}, but ${run.failures[0]}`,
     jobTitle: "agy Image",
     jobClass: "image"
   };
@@ -1257,9 +1244,10 @@ function handleTaskResumeCandidate(argv) {
 
 function terminateJobProcessTrees(job) {
   const targets = resolveJobKillTargets(job);
+  const markers = buildProcessMarkers();
   const results = [];
   for (const pid of targets) {
-    results.push({ pid, ...terminateProcessTree(pid, { expect: OUR_PROCESS_MARKERS }) });
+    results.push({ pid, ...terminateProcessTree(pid, { expect: markers }) });
   }
   if (results.length === 0) {
     return { attempted: false, delivered: false, method: null, results: [] };

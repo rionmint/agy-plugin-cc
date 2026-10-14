@@ -97,7 +97,7 @@ if (prompt === null) {
 const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");
 const resumeId = flagValue("--conversation");
 let conversationId = resumeId || fixedConversation;
-if (resumeId && scenario === "unknown-conversation") {
+if (resumeId && (scenario === "unknown-conversation" || scenario === "unknown-conversation-denied")) {
   process.stderr.write('warning: conversation "' + resumeId + '" not found\\n');
   conversationId = newConversation;
 }
@@ -109,7 +109,18 @@ if (scenario === "not-logged-in") {
     emit({ event: "result", result: { conversation_id: "", status: "ERROR", response: "", error: "authentication failed or timed out", usage } });
     process.exit(1);
   }, 20000);
+} else if (scenario === "no-init") {
+  // Hangs in start-up and never reports init.
+  setTimeout(() => process.exit(0), 30000);
+} else if (scenario === "result-without-init") {
+  emit({ event: "result", result: { conversation_id: conversationId, status: "SUCCESS", response: "looks fine", usage } });
+  process.exit(0);
 } else {
+  if (scenario === "foreign-settings") {
+    // Another writer swaps the settings while this agy starts; agy rewrites
+    // the file from what it read, so the swap is what ends up on disk.
+    fs.writeFileSync(settingsFile, JSON.stringify({ permissions: { allow: ["read_url(*)", "command(*)"], deny: [] } }));
+  }
   const permissionMode = scenario === "always-proceed" ? "always-proceed" : (settings?.toolPermission ?? "request-review");
   emit({ event: "init", conversation_id: conversationId, init: { model: flagValue("--model") || "gemini-4-argon-medium", cwd: process.cwd(), tools: [], permission_mode: permissionMode } });
 
@@ -124,7 +135,7 @@ if (scenario === "not-logged-in") {
     const schemaPath = flagValue("--json-schema");
     let response;
     let structured = null;
-    if (scenario === "denied-once" && !resumeId) {
+    if ((scenario === "denied-once" && !resumeId) || scenario === "unknown-conversation-denied") {
       process.stderr.write('jetski: no output produced — a tool required the "command" permission that headless mode cannot prompt for, so it was auto-denied.\\n');
       emit({ event: "result", result: { conversation_id: conversationId, status: "SUCCESS", response: "", duration_seconds: 1, num_turns: 1, usage, denied_actions: [{ action: "command", display_name: "RunCommand" }] } });
       process.exit(0);
@@ -134,14 +145,22 @@ if (scenario === "not-logged-in") {
       emit({ event: "result", result: { conversation_id: conversationId, status: "SUCCESS", response: "1^2 = 1\\n2^2 = ", duration_seconds: 0, num_turns: 1, usage } });
       process.exit(0);
     }
-    if (scenario === "image" || scenario === "no-image") {
-      if (scenario === "image") {
+    if (scenario === "image" || scenario === "no-image" || scenario === "image-timeout") {
+      if (scenario !== "no-image") {
         const dir = path.join(home, ".gemini", "antigravity-cli", "brain", conversationId);
         fs.mkdirSync(dir, { recursive: true });
         const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("fake jpeg body")]);
         fs.writeFileSync(path.join(dir, "fake_image_" + Date.now() + ".jpg"), jpeg);
       }
+      if (scenario === "image-timeout") {
+        process.stderr.write("[agy] print timeout after 900s with turn in progress; returning partial output\\n");
+        emit({ event: "result", result: { conversation_id: conversationId, status: "SUCCESS", response: "Still generating", duration_seconds: 0, num_turns: 1, usage } });
+        process.exit(0);
+      }
       response = scenario === "image" ? "Generated the image." : "";
+    } else if (scenario === "bad-shape" && schemaPath) {
+      structured = {};
+      response = "{}";
     } else if (schemaPath || /critique|structured_output_contract/i.test(prompt)) {
       structured = { verdict: "approve", summary: "No material issues found in the reviewed changes.", findings: [], next_steps: ["Ship it."] };
       response = JSON.stringify({ ...structured, toolAction: "Finishing", toolSummary: "Done" });

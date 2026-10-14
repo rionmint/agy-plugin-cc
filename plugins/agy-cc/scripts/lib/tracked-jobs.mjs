@@ -16,8 +16,19 @@ export const SESSION_ID_ENV = "AGY_CC_SESSION_ID";
 
 // Pids are read back from a json file, and the operating system reuses pids.
 // A process is only signalled when its command line still looks like a run this
-// plugin started: the bridge worker, or an `agy` / `agy.exe` binary.
-export const OUR_PROCESS_MARKERS = Object.freeze(["agy-bridge.mjs", /(^|[\\/"\s])agy(\.exe)?(["\s]|$)/i]);
+// plugin started: the bridge worker, or an `agy` binary (`agy.exe`, or the
+// `agy.cmd` shim, whose cmd.exe is the recorded child on Windows).
+export const OUR_PROCESS_MARKERS = Object.freeze(["agy-bridge.mjs", /(^|[\\/"\s])agy(\.exe|\.cmd|\.bat)?(["\s]|$)/i]);
+
+/** The fixed markers plus the file name of a binary set through AGY_BINARY. */
+export function buildProcessMarkers(env = process.env) {
+  const override = String(env?.AGY_BINARY ?? "").trim();
+  const name = override ? override.split(/[\\/]/).pop() : "";
+  if (!name || /^agy(\.exe|\.cmd|\.bat)?$/i.test(name) || name.length < 3) {
+    return OUR_PROCESS_MARKERS;
+  }
+  return [...OUR_PROCESS_MARKERS, name];
+}
 
 export function nowIso() {
   return new Date().toISOString();

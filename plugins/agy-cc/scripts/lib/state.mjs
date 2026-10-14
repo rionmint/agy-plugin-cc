@@ -608,22 +608,3 @@ export function resolveRunDir(cwd, jobId) {
   const safeId = assertSafeJobId(jobId);
   return path.join(resolveStateDir(cwd), RUNS_DIR_NAME, safeId);
 }
-
-/** Remove a run's scratch directory, but only one that really is ours. */
-export function removeRunDir(cwd, jobId) {
-  const runDir = resolveRunDir(cwd, jobId);
-  try {
-    const runsRoot = fs.realpathSync(path.join(resolveStateDir(cwd), RUNS_DIR_NAME));
-    const stat = fs.lstatSync(runDir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      return;
-    }
-    const relative = path.relative(runsRoot, fs.realpathSync(runDir));
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-      return;
-    }
-    fs.rmSync(runDir, { recursive: true, force: true });
-  } catch {
-    // never created, or already gone
-  }
-}

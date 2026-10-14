@@ -209,14 +209,26 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function lockHolderIsAlive(lockPath) {
-  let token = "";
+/** How long agy may take to report `init` before the run is killed. */
+export const STARTUP_TIMEOUT_MS = 90000;
+
+/**
+ * A lock is only treated as abandoned when its holder is dead *and* it is
+ * older than any start-up could take. The holder recorded in the lock is the
+ * bridge, not agy: a bridge that died could leave an agy child that is still
+ * starting, and that child must not be handed someone else's profile.
+ */
+const STALE_LOCK_MIN_AGE_MS = STARTUP_TIMEOUT_MS + 60000;
+
+function readLockToken(lockPath) {
   try {
-    token = String(fs.readFileSync(lockPath, "utf8")).trim();
+    return String(fs.readFileSync(lockPath, "utf8")).trim();
   } catch {
-    return false;
+    return "";
   }
-  const pid = Number.parseInt(token.split(":")[0], 10);
+}
+
+function pidIsAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) {
     return true;
   }
@@ -225,6 +237,62 @@ function lockHolderIsAlive(lockPath) {
     return true;
   } catch (error) {
     return error?.code === "EPERM";
+  }
+}
+
+/** The token of an abandoned lock, or null while the lock may still be in use. */
+function staleLockToken(lockPath, now = Date.now()) {
+  let stat;
+  try {
+    stat = fs.statSync(lockPath);
+  } catch {
+    return null;
+  }
+  const token = readLockToken(lockPath);
+  if (!token) {
+    return null;
+  }
+  const pid = Number.parseInt(token.split(":")[0], 10);
+  if (pidIsAlive(pid) || now - stat.mtimeMs < STALE_LOCK_MIN_AGE_MS) {
+    return null;
+  }
+  return token;
+}
+
+/**
+ * Take an abandoned lock out of the way without ever deleting a live one.
+ *
+ * Two waiters can both decide the same lock is abandoned. Unlinking by name
+ * would let the slower one delete the lock the faster one has just taken. The
+ * lock is instead moved aside atomically, and only deleted if what was moved is
+ * the abandoned token; anything else is put back.
+ */
+function reclaimStaleLock(lockPath, staleToken) {
+  const aside = `${lockPath}.reclaim.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    fs.renameSync(lockPath, aside);
+  } catch {
+    return;
+  }
+  if (readLockToken(aside) === staleToken) {
+    try {
+      fs.unlinkSync(aside);
+    } catch {
+      // disposable
+    }
+    return;
+  }
+  // We moved a live lock. Put it back; if a third run took the name in the
+  // meantime, the post-start settings check is what still catches a mix-up.
+  try {
+    fs.linkSync(aside, lockPath);
+  } catch {
+    // name taken again
+  }
+  try {
+    fs.unlinkSync(aside);
+  } catch {
+    // disposable
   }
 }
 
@@ -239,8 +307,7 @@ export async function acquireAgyHomeLock(home, options = {}) {
   const lockPath = path.join(home, ".agy-cc-settings.lock");
   fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   const token = `${process.pid}:${Math.random().toString(36).slice(2, 10)}`;
-  const deadline = Date.now() + (options.waitMs ?? 120000);
-  let brokeStale = false;
+  const deadline = Date.now() + (options.waitMs ?? 240000);
 
   for (;;) {
     const staging = `${lockPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
@@ -252,7 +319,7 @@ export async function acquireAgyHomeLock(home, options = {}) {
         token,
         release() {
           try {
-            if (String(fs.readFileSync(lockPath, "utf8")).trim() === token) {
+            if (readLockToken(lockPath) === token) {
               fs.unlinkSync(lockPath);
             }
           } catch {
@@ -272,13 +339,9 @@ export async function acquireAgyHomeLock(home, options = {}) {
       }
     }
 
-    if (!brokeStale && !lockHolderIsAlive(lockPath)) {
-      brokeStale = true;
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {
-        // someone else got there first
-      }
+    const stale = staleLockToken(lockPath);
+    if (stale) {
+      reclaimStaleLock(lockPath, stale);
       continue;
     }
     if (Date.now() >= deadline) {
@@ -286,6 +349,36 @@ export async function acquireAgyHomeLock(home, options = {}) {
     }
     await sleep(100);
   }
+}
+
+function sameRules(left = [], right = []) {
+  const a = [...new Set(left)].sort();
+  const b = [...new Set(right)].sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/**
+ * agy rewrites its settings file when it starts, from what it has just read.
+ * Reading the file back right after `init` therefore shows the rules agy
+ * loaded; if they are not this run's profile, something else wrote the file in
+ * between and the run must not continue.
+ */
+export function settingsMatchProfile(settingsFile, profileName) {
+  const profile = PERMISSION_PROFILES[profileName];
+  let settings;
+  try {
+    settings = readJsonFile(settingsFile);
+  } catch {
+    return false;
+  }
+  const permissions = settings?.permissions ?? {};
+  const toolPermission = settings?.toolPermission ?? EXPECTED_PERMISSION_MODE;
+  return (
+    toolPermission === EXPECTED_PERMISSION_MODE &&
+    sameRules(permissions.allow, profile.allow) &&
+    sameRules(permissions.deny, profile.deny) &&
+    sameRules(permissions.ask ?? [], [])
+  );
 }
 
 export function getAgyAvailability(cwd, options = {}) {
@@ -506,8 +599,13 @@ function isWindowsShim(binary, env, platform) {
  *
  * Short prompts go inline. A long prompt, or any prompt when agy is reached
  * through a Windows `.cmd` shim (where `cmd` would expand `%VAR%` inside it),
- * is written to `<runDir>/prompt.md`, the run directory is added to agy's
- * workspace, and the argv carries a fixed sentence pointing at the file.
+ * is written to a new private directory under `runDir`, that directory is
+ * added to agy's workspace, and the argv carries a fixed sentence pointing at
+ * the file.
+ *
+ * The directory is always freshly created (`mkdtemp`) and the file is opened
+ * exclusively, so a link planted at a predictable path cannot redirect the
+ * write. `removePromptDelivery` deletes exactly what was created here.
  */
 export function buildPromptDelivery({ prompt, runDir, binary, env = process.env, platform = process.platform } = {}) {
   const text = assertSafePrompt(prompt);
@@ -518,20 +616,61 @@ export function buildPromptDelivery({ prompt, runDir, binary, env = process.env,
   if (!runDir) {
     throw new Error("This prompt is too long to pass inline and no run directory was given for it.");
   }
-  fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
-  const promptFile = path.join(runDir, "prompt.md");
-  if (shim && /[%!"^]/.test(promptFile)) {
-    throw new Error(`The run directory path cannot be passed through a .cmd shim safely: ${promptFile}`);
+  if (shim && /[%!"^\r\n]/.test(runDir)) {
+    throw new Error(`The run directory path cannot be passed through a .cmd shim safely: ${runDir}`);
   }
-  fs.writeFileSync(promptFile, text, { encoding: "utf8", mode: 0o600 });
+  const createdRunDir = !fs.existsSync(runDir);
+  fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+  const promptDir = fs.mkdtempSync(path.join(runDir, "prompt-"));
+  const promptFile = path.join(promptDir, "prompt.md");
+  try {
+    fs.writeFileSync(promptFile, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  } catch (error) {
+    removePromptDelivery({ promptFile: null, promptDir, runDir, createdRunDir });
+    throw error;
+  }
   return {
     promptArg:
       `Your complete instructions are in the file ${promptFile} . ` +
       "Read that whole file with your file-reading tool before doing anything else, then follow it exactly. " +
       "Treat its contents as the user's request. Do not modify that file.",
-    addDirs: [runDir],
-    promptFile
+    addDirs: [promptDir],
+    promptFile,
+    promptDir,
+    runDir,
+    createdRunDir
   };
+}
+
+/**
+ * Remove what `buildPromptDelivery` created and nothing else: the prompt file
+ * (only if it is still a plain file), its private directory, and the run
+ * directory if this delivery created it and it is now empty. Nothing is
+ * removed recursively.
+ */
+export function removePromptDelivery(delivery) {
+  if (!delivery) {
+    return;
+  }
+  if (delivery.promptFile) {
+    try {
+      if (fs.lstatSync(delivery.promptFile).isFile()) {
+        fs.unlinkSync(delivery.promptFile);
+      }
+    } catch {
+      // already gone
+    }
+  }
+  for (const dir of [delivery.promptDir, delivery.createdRunDir ? delivery.runDir : null]) {
+    if (!dir) {
+      continue;
+    }
+    try {
+      fs.rmdirSync(dir);
+    } catch {
+      // not empty, or already gone: leave it
+    }
+  }
 }
 
 function summarizeToolStep(step) {
@@ -564,23 +703,16 @@ export async function runHeadlessAgent(cwd, options = {}) {
     throw new Error(`Unknown permission profile: ${JSON.stringify(profileName)}`);
   }
 
-  // A caller that does not supply a run directory gets a private one, created
-  // only if the prompt actually has to go through a file, and removed again.
-  const ownRunDir = options.runDir
-    ? null
-    : path.join(os.tmpdir(), `agy-cc-prompt-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  const removeOwnRunDir = () => {
-    if (ownRunDir) {
-      fs.rmSync(ownRunDir, { recursive: true, force: true });
-    }
-  };
-  let delivery;
+  // A caller that does not supply a run directory gets prompt files under the
+  // system temp directory; either way only what this run created is removed.
+  let delivery = null;
+  const removeOwnRunDir = () => removePromptDelivery(delivery);
   let args;
   let lock;
   try {
     delivery = buildPromptDelivery({
       prompt: options.prompt,
-      runDir: options.runDir ?? ownRunDir,
+      runDir: options.runDir ?? path.join(os.tmpdir(), "agy-cc-prompts"),
       binary,
       env,
       platform
@@ -634,9 +766,16 @@ export async function runHeadlessAgent(cwd, options = {}) {
     }
 
     // agy reads its settings once at start-up, so the lock only has to cover
-    // the window until `init`. A run that never gets there must not hold
-    // every other run hostage.
-    const holdTimer = setTimeout(releaseLock, options.lockHoldMs ?? 60000);
+    // the window until `init`. A run that never gets there is killed, and the
+    // lock is released only once it has exited, so a late start-up can never
+    // read a profile meant for another run.
+    let startupTimedOut = false;
+    const startupTimer = setTimeout(() => {
+      if (!init) {
+        startupTimedOut = true;
+        stopChild();
+      }
+    }, options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS);
 
     const agentPid = child.pid ?? null;
     emitProgress(options.onProgress, `Running agy (${binary}).`, "starting", {
@@ -654,6 +793,7 @@ export async function runHeadlessAgent(cwd, options = {}) {
     let finalResult = null;
     let partialText = "";
     let permissionMismatch = null;
+    let settingsMismatch = false;
     let authRequired = false;
     let killedByBridge = false;
 
@@ -690,19 +830,33 @@ export async function runHeadlessAgent(cwd, options = {}) {
 
     const handleEvent = (event) => {
       if (event?.event === "init") {
+        if (init) {
+          return;
+        }
+        clearTimeout(startupTimer);
         init = event.init ?? {};
         conversationId = event.conversation_id ?? init.conversation_id ?? conversationId;
-        releaseLock();
         if (init.permission_mode !== EXPECTED_PERMISSION_MODE) {
           // The profile this run was promised is not the one agy loaded.
           permissionMismatch = String(init.permission_mode ?? "unknown");
           stopChild();
           return;
         }
+        // Still under the lock: what agy wrote back is what it loaded.
+        if (!settingsMatchProfile(resolveAgySettingsFile(home), profileName)) {
+          settingsMismatch = true;
+          stopChild();
+          return;
+        }
+        releaseLock();
         emitProgress(options.onProgress, `agy conversation ${conversationId} (model ${init.model ?? "default"}).`, "running", {
           threadId: conversationId,
           agentPid
         });
+        return;
+      }
+      if (!init) {
+        // Nothing counts before agy has said how it started.
         return;
       }
       if (event?.event === "result") {
@@ -757,14 +911,14 @@ export async function runHeadlessAgent(cwd, options = {}) {
     });
 
     child.on("error", (error) => {
-      clearTimeout(holdTimer);
+      clearTimeout(startupTimer);
       releaseLock();
       removeOwnRunDir();
       reject(error);
     });
 
     child.on("close", (code, signal) => {
-      clearTimeout(holdTimer);
+      clearTimeout(startupTimer);
       releaseLock();
       removeOwnRunDir();
       const tail = lineBuffer.trim();
@@ -795,6 +949,8 @@ export async function runHeadlessAgent(cwd, options = {}) {
         timedOut: /print timeout after/i.test(stderr),
         authRequired,
         permissionMismatch,
+        settingsMismatch,
+        startupTimedOut,
         killedByBridge,
         resumeConversationId: options.resumeConversationId ?? null,
         printTimeout: options.printTimeout || DEFAULT_PRINT_TIMEOUT,
@@ -837,6 +993,19 @@ export function judgeAgyRun(run, options = {}) {
     );
     return failures;
   }
+  if (run.settingsMismatch) {
+    failures.push(
+      "The permission rules agy loaded were not this run's profile (another run changed the plugin's agy settings while this one started). The run was stopped; run it again."
+    );
+    return failures;
+  }
+  if (run.startupTimedOut) {
+    failures.push("agy did not start within 90 seconds and was stopped.");
+    return failures;
+  }
+  if (!run.init) {
+    failures.push("agy never reported its start-up event, so the run's permissions could not be checked.");
+  }
   if (run.resumeConversationId) {
     const missing = new RegExp(`conversation\\s+"?${escapeRegExp(run.resumeConversationId)}"?\\s+not found`, "i").test(
       run.stderr ?? ""
@@ -874,12 +1043,25 @@ function escapeRegExp(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Only a refused permission is worth one automatic follow-up turn. */
+/**
+ * Only a refused permission is worth one automatic follow-up turn, and only
+ * when it is the run's sole problem: a lost conversation, a failed status or a
+ * timeout must stay failures rather than be papered over by a second turn.
+ */
 function isRecoverable(run) {
-  if (!run.conversationId || run.authRequired || run.permissionMismatch || run.timedOut || run.status !== 0) {
+  if (!run.init || !run.conversationId || run.status !== 0 || run.result?.status !== "SUCCESS") {
     return false;
   }
-  return run.deniedActions.length > 0 && run.failures.length > 0;
+  if (run.authRequired || run.permissionMismatch || run.settingsMismatch || run.startupTimedOut || run.timedOut) {
+    return false;
+  }
+  if (run.resumeConversationId && run.conversationId !== run.resumeConversationId) {
+    return false;
+  }
+  if (/conversation\s+"?[^"\s]+"?\s+not found/i.test(run.stderr ?? "")) {
+    return false;
+  }
+  return run.deniedActions.length > 0;
 }
 
 export function buildRecoveryPrompt(run) {

@@ -28,13 +28,17 @@ import {
   parseStructuredOutput,
   PERMISSION_PROFILES,
   prepareAgyHome,
+  removePromptDelivery,
   resolveAgyBinary,
   resolveAgyHome,
   resolvePermissionProfile,
   runAgyWithRecovery,
-  runHeadlessAgent
+  runHeadlessAgent,
+  settingsMatchProfile,
+  acquireAgyHomeLock
 } from "../plugins/agy-cc/scripts/lib/agy.mjs";
-import { runCommand } from "../plugins/agy-cc/scripts/lib/process.mjs";
+import { buildCmdLine, runCommand } from "../plugins/agy-cc/scripts/lib/process.mjs";
+import { buildProcessMarkers, OUR_PROCESS_MARKERS } from "../plugins/agy-cc/scripts/lib/tracked-jobs.mjs";
 
 function fakeSetup(scenario = "default", extra = {}) {
   const binDir = makeTempDir();
@@ -172,7 +176,8 @@ test("short prompts go inline and long ones go through a prompt file", () => {
   const longText = "x".repeat(INLINE_PROMPT_MAX_CHARS + 1);
   const long = buildPromptDelivery({ prompt: longText, runDir, binary: "/opt/agy", env, platform: "linux" });
   assert.equal(fs.readFileSync(long.promptFile, "utf8"), longText);
-  assert.deepEqual(long.addDirs, [runDir]);
+  assert.deepEqual(long.addDirs, [long.promptDir]);
+  assert.equal(path.dirname(long.promptDir), runDir, "a fresh directory inside the run directory");
   assert.match(long.promptArg, /Your complete instructions are in the file .+prompt\.md \. /);
   assert.ok(long.promptArg.length < 400);
 });
@@ -196,12 +201,18 @@ test("a .cmd shim on Windows never receives the prompt inline", () => {
 test("judgeAgyRun treats agy's misleading successes as failures", () => {
   const ok = {
     status: 0,
+    init: { permission_mode: "request-review" },
     result: { status: "SUCCESS", response: "fine" },
     finalMessage: "fine",
     deniedActions: [],
     stderr: ""
   };
   assert.deepEqual(judgeAgyRun(ok), []);
+
+  const noInit = { ...ok, init: null };
+  assert.ok(judgeAgyRun(noInit).some((reason) => /never reported its start-up event/.test(reason)));
+  assert.ok(judgeAgyRun({ ...ok, settingsMismatch: true }).some((reason) => /not this run's profile/.test(reason)));
+  assert.ok(judgeAgyRun({ ...ok, startupTimedOut: true }).some((reason) => /did not start within 90 seconds/.test(reason)));
 
   const denied = { ...ok, finalMessage: "", result: { status: "SUCCESS", response: "" }, deniedActions: [{ action: "read_file", display_name: "ViewFile" }] };
   assert.ok(judgeAgyRun(denied).some((reason) => /read_file\/ViewFile/.test(reason)));
@@ -438,4 +449,106 @@ test("live agy --help advertises the headless flags this bridge uses", () => {
   ]) {
     assert.match(text, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+});
+
+test("a profile swapped in while agy starts is caught right after init", async () => {
+  const { cwd, env, home, realHome } = fakeSetup("foreign-settings", { FAKE_AGY_DELAY_MS: "15000" });
+  const started = Date.now();
+  const run = await runHeadlessAgent(cwd, { prompt: "review", env, agyHome: home, realHome, permissionProfile: "read-only" });
+  assert.ok(Date.now() - started < 10000, "the run was stopped at init");
+  assert.equal(run.settingsMismatch, true);
+  assert.ok(run.failures.some((reason) => /not this run's profile/.test(reason)));
+});
+
+test("settingsMatchProfile accepts agy's normalised rewrite of the profile", () => {
+  const home = makeTempDir();
+  const file = prepareAgyHome(home, "write", { realHome: makeTempDir(), model: null });
+  assert.equal(settingsMatchProfile(file, "write"), true);
+  // agy drops default-valued keys when it rewrites the file.
+  const rewritten = { permissions: { allow: [...PERMISSION_PROFILES.write.allow], deny: [...PERMISSION_PROFILES.write.deny].reverse() } };
+  fs.writeFileSync(file, JSON.stringify(rewritten));
+  assert.equal(settingsMatchProfile(file, "write"), true);
+  assert.equal(settingsMatchProfile(file, "read-only"), false);
+  fs.writeFileSync(file, JSON.stringify({ toolPermission: "always-proceed", permissions: rewritten.permissions }));
+  assert.equal(settingsMatchProfile(file, "write"), false);
+});
+
+test("a run that never reports init is killed, failed, and gives the lock back", async () => {
+  const { cwd, env, home, realHome } = fakeSetup("no-init");
+  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHome: home, realHome, startupTimeoutMs: 1500 });
+  assert.equal(run.startupTimedOut, true);
+  assert.ok(run.failures.some((reason) => /did not start/.test(reason)));
+  assert.equal(fs.existsSync(path.join(home, ".agy-cc-settings.lock")), false);
+});
+
+test("a result without an init event is not accepted", async () => {
+  const { cwd, env, home, realHome } = fakeSetup("result-without-init");
+  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHome: home, realHome });
+  assert.equal(run.result, null, "events before init are ignored");
+  assert.ok(run.failures.some((reason) => /never reported its start-up event/.test(reason)));
+});
+
+test("an abandoned lock is reclaimed only once it is old and its holder is dead", async () => {
+  const home = makeTempDir();
+  const lockPath = path.join(home, ".agy-cc-settings.lock");
+
+  fs.writeFileSync(lockPath, "2147483:dead");
+  await assert.rejects(acquireAgyHomeLock(home, { waitMs: 400 }), /Timed out waiting/, "a fresh lock is respected");
+
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  fs.utimesSync(lockPath, old, old);
+  const lock = await acquireAgyHomeLock(home, { waitMs: 2000 });
+  assert.match(fs.readFileSync(lockPath, "utf8"), new RegExp(`^${process.pid}:`));
+  lock.release();
+  assert.equal(fs.existsSync(lockPath), false);
+
+  fs.writeFileSync(lockPath, `${process.pid}:alive`);
+  fs.utimesSync(lockPath, old, old);
+  await assert.rejects(acquireAgyHomeLock(home, { waitMs: 400 }), /Timed out waiting/, "a live holder keeps its lock however old");
+  assert.equal(fs.readFileSync(lockPath, "utf8"), `${process.pid}:alive`);
+});
+
+test("a planted file in the run directory is neither overwritten nor removed", () => {
+  const runDir = makeTempDir();
+  const planted = path.join(runDir, "prompt.md");
+  fs.writeFileSync(planted, "keep");
+  const delivery = buildPromptDelivery({
+    prompt: "z".repeat(INLINE_PROMPT_MAX_CHARS + 5),
+    runDir,
+    binary: "/opt/agy",
+    env: { PATH: "" },
+    platform: "linux"
+  });
+  assert.notEqual(delivery.promptFile, planted);
+  assert.equal(fs.readFileSync(planted, "utf8"), "keep");
+  removePromptDelivery(delivery);
+  assert.equal(fs.existsSync(delivery.promptDir), false);
+  assert.equal(fs.readFileSync(planted, "utf8"), "keep", "cleanup removed only what it created");
+  assert.equal(fs.existsSync(runDir), true, "a run directory that already existed is kept");
+});
+
+test("a lost conversation is not rescued by the automatic follow-up turn", async () => {
+  const { cwd, env, home, realHome, log } = fakeSetup("unknown-conversation-denied");
+  const run = await runAgyWithRecovery(cwd, {
+    prompt: "continue",
+    env,
+    agyHome: home,
+    realHome,
+    resumeConversationId: "abcdef12-0000-4000-8000-000000000000"
+  });
+  assert.equal(run.attempts, 1);
+  assert.ok(run.failures.some((reason) => /could not find conversation/.test(reason)));
+  assert.equal(readFakeAgyLog(log).filter((entry) => entry.argv.some((token) => token.startsWith("-p="))).length, 1);
+});
+
+test("a batch file path that cmd would rewrite is refused", () => {
+  assert.throws(() => buildCmdLine(String.raw`C:\tools\%SHIM_ROOT%\agy.cmd`, ["x"]), /cmd would rewrite/);
+  assert.throws(() => buildCmdLine(String.raw`C:\tools\a!b\agy.cmd`, ["x"]), /cmd would rewrite/);
+  assert.match(buildCmdLine(String.raw`C:\Program Files\agy\agy.cmd`, ["x"]), /"C:\\Program Files\\agy\\agy\.cmd"/);
+});
+
+test("the process markers also accept a binary configured through AGY_BINARY", () => {
+  assert.equal(buildProcessMarkers({}), OUR_PROCESS_MARKERS);
+  assert.equal(buildProcessMarkers({ AGY_BINARY: "C:\\bin\\agy.exe" }), OUR_PROCESS_MARKERS);
+  assert.ok(buildProcessMarkers({ AGY_BINARY: "/opt/google/antigravity-cli" }).includes("antigravity-cli"));
 });
