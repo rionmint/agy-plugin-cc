@@ -33,9 +33,13 @@ Hardened after two rounds of adversarial review (Codex) before release:
   review showed lock recovery could still let two runs overlap, and an orphaned agy could read the
   wrong profile. Profiles now each have their own home, so nothing is ever swapped and there is no
   lock; a conversation continued under another profile is copied into that home.
-- At `init` the bridge checks the home's settings hold exactly this run's rules (malformed settings
-  never match), a run that never passes the start-up checks within 90 seconds is killed, and nothing
-  agy printed before the checks counts.
+- At `init` the bridge checks the home's settings hold exactly this run's rules (an unknown key, an
+  explicit null, a wrong type or a link never match), a run that never passes the start-up checks
+  within 90 seconds is killed, and nothing agy printed before the checks counts.
+- A third round found the homes were separate by name only. A home that is a link, belongs to another
+  user, or is the same directory as another profile's home now stops the run.
+- Moving a conversation between homes is refused while agy has it open or if it contains links, is
+  staged, and replaces the database last, keeping the source's timestamp.
 - Prompt files go into a fresh `mkdtemp` directory, are opened exclusively, and cleanup removes only
   what was created, checked by device and inode, never recursively.
 - A batch-file path that `cmd` would rewrite (`%`, `!`, `^`, quotes) is refused.
@@ -43,5 +47,6 @@ Hardened after two rounds of adversarial review (Codex) before release:
   conversation stays a failure.
 - An image saved from a failed run, and a critique whose structured output does not match the full
   review schema, are reported as failures.
-- `stop` recognises the `agy.cmd` shim and the binary a run was actually started with (recorded in the
-  job), matched as a whole path component.
+- `stop` only signals a process whose command line starts with one of the plugin's programs or the
+  exact agy path recorded in the job, including the `agy.cmd` shim run by cmd.exe.
+- A progress reporter that throws can no longer abort a run after agy has been started.

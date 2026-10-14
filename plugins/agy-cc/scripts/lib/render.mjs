@@ -21,6 +21,18 @@ function formatLineRange(finding) {
   return `:${finding.line_start}-${finding.line_end}`;
 }
 
+const REVIEW_TOP_LEVEL_KEYS = new Set(["verdict", "summary", "findings", "next_steps"]);
+const REVIEW_FINDING_KEYS = new Set([
+  "severity",
+  "title",
+  "body",
+  "file",
+  "line_start",
+  "line_end",
+  "confidence",
+  "recommendation"
+]);
+
 export function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
@@ -37,15 +49,24 @@ export function validateReviewResultShape(data) {
   if (!Array.isArray(data.next_steps)) {
     return "Missing array `next_steps`.";
   }
-  // The rest of `schemas/review-output.schema.json`: a review that passes here
-  // is one the renderer can show without inventing anything.
-  if (!["approve", "needs-attention"].includes(data.verdict.trim())) {
+  // The rest of `schemas/review-output.schema.json`, including its
+  // `additionalProperties: false`: a review that passes here is one the
+  // renderer can show without inventing or dropping anything.
+  const extraTop = Object.keys(data).filter((key) => !REVIEW_TOP_LEVEL_KEYS.has(key));
+  if (extraTop.length > 0) {
+    return `Unexpected top-level field(s): ${extraTop.join(", ")}.`;
+  }
+  if (!["approve", "needs-attention"].includes(data.verdict)) {
     return "`verdict` must be `approve` or `needs-attention`.";
   }
   for (const [index, finding] of data.findings.entries()) {
     const where = `findings[${index}]`;
     if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
       return `\`${where}\` must be an object.`;
+    }
+    const extra = Object.keys(finding).filter((key) => !REVIEW_FINDING_KEYS.has(key));
+    if (extra.length > 0) {
+      return `Unexpected field(s) in \`${where}\`: ${extra.join(", ")}.`;
     }
     if (!["critical", "high", "medium", "low"].includes(finding.severity)) {
       return `\`${where}.severity\` must be critical, high, medium or low.`;

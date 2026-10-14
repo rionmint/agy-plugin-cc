@@ -20,7 +20,6 @@ import {
   listConversationImages,
   parseStructuredOutput,
   readUserToolPermission,
-  resolveAgyBinary,
   resolveAgyHome,
   resolveAgyHomeRoot,
   resolvePermissionProfile,
@@ -1245,7 +1244,7 @@ function handleTaskResumeCandidate(argv) {
 
 function terminateJobProcessTrees(job) {
   const targets = resolveJobKillTargets(job);
-  const markers = buildProcessMarkers([job.agentBinary, resolveAgyBinary()]);
+  const markers = buildProcessMarkers([job.agentBinary]);
   const results = [];
   for (const pid of targets) {
     results.push({ pid, ...terminateProcessTree(pid, { expect: markers }) });

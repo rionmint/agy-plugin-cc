@@ -193,11 +193,42 @@ const SETTING_DEFAULTS = Object.freeze({
   allowNonWorkspaceAccess: false,
   useG1Credits: false,
   showFeedbackSurvey: true,
-  showTips: true
+  showTips: true,
+  artifactReviewPolicy: "asks-for-review"
 });
 
+// Every key agy 1.3.5 documents for this file. A key outside this list is not
+// something the bridge put there and may change behaviour it cannot judge, so
+// a file that has one never counts as a profile match.
+const KNOWN_SETTING_KEYS = new Set([
+  "colorScheme",
+  "altScreenMode",
+  "toolPermission",
+  "artifactReviewPolicy",
+  "notifications",
+  "showTips",
+  "showFeedbackSurvey",
+  "editor",
+  "editorMode",
+  "vimInsertFirst",
+  "allowNonWorkspaceAccess",
+  "enableTerminalSandbox",
+  "useG1Credits",
+  "enableTelemetry",
+  "verbosity",
+  "runningLightSpeed",
+  "model",
+  "permissions"
+]);
+
+const PERMISSION_KEYS = new Set(["allow", "deny", "ask"]);
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function asRuleList(value) {
-  if (value === undefined || value === null) {
+  if (value === undefined) {
     return [];
   }
   if (!Array.isArray(value) || !value.every((rule) => typeof rule === "string")) {
@@ -211,15 +242,21 @@ function sameList(left, right) {
 }
 
 /**
- * The parts of a settings object that decide what a run may do, with agy's
- * defaults filled in. Anything malformed comes back as null.
+ * The settings that decide what a run may do, with agy's defaults filled in,
+ * plus every other key as it is. Returns null for anything malformed: an
+ * unknown key, an explicit null, a value of the wrong type.
  */
 function effectiveSettings(settings) {
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+  if (!isPlainObject(settings)) {
     return null;
   }
-  const permissions = settings.permissions ?? {};
-  if (typeof permissions !== "object" || Array.isArray(permissions) || permissions === null) {
+  for (const [key, value] of Object.entries(settings)) {
+    if (!KNOWN_SETTING_KEYS.has(key) || value === null) {
+      return null;
+    }
+  }
+  const permissions = settings.permissions === undefined ? {} : settings.permissions;
+  if (!isPlainObject(permissions) || Object.keys(permissions).some((key) => !PERMISSION_KEYS.has(key))) {
     return null;
   }
   const allow = asRuleList(permissions.allow);
@@ -228,33 +265,62 @@ function effectiveSettings(settings) {
   if (!allow || !deny || !ask) {
     return null;
   }
-  const effective = { allow, deny, ask };
+  const effective = { ...settings, allow, deny, ask };
+  delete effective.permissions;
   for (const [key, fallback] of Object.entries(SETTING_DEFAULTS)) {
-    const value = settings[key] ?? fallback;
+    const value = settings[key] === undefined ? fallback : settings[key];
     if (typeof value !== typeof fallback) {
       return null;
     }
     effective[key] = value;
   }
-  effective.model = typeof settings.model === "string" ? settings.model : null;
+  if (settings.model !== undefined && typeof settings.model !== "string") {
+    return null;
+  }
   return effective;
 }
 
+function sameEffective(left, right) {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    const a = left[key];
+    const b = right[key];
+    if (Array.isArray(a) || Array.isArray(b)) {
+      if (!sameList(a, b)) {
+        return false;
+      }
+    } else if (a !== b) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function readSettingsFileStrict(settingsFile) {
+  const stat = fs.lstatSync(settingsFile);
+  if (!stat.isFile()) {
+    // A link (or anything else) in place of the file is not ours to trust.
+    return undefined;
+  }
+  return readJsonFile(settingsFile);
+}
+
 /**
- * True when the settings file holds exactly this profile's permissions and the
- * base mode the bridge expects. Never throws: an unreadable or malformed file
- * is simply not a match.
+ * True when the settings file holds exactly this profile's permissions, the
+ * base mode the bridge expects, and nothing the bridge does not recognise.
+ * Never throws: an unreadable, linked or malformed file is simply not a match.
  */
 export function settingsMatchProfile(settingsFile, profileName) {
   try {
     const profile = PERMISSION_PROFILES[assertProfile(profileName)];
-    const effective = effectiveSettings(readJsonFile(settingsFile));
+    const effective = effectiveSettings(readSettingsFileStrict(settingsFile));
     if (!effective) {
       return false;
     }
     return (
       effective.toolPermission === EXPECTED_PERMISSION_MODE &&
       effective.allowNonWorkspaceAccess === false &&
+      effective.artifactReviewPolicy === SETTING_DEFAULTS.artifactReviewPolicy &&
       sameList(effective.allow, asRuleList(profile.allow)) &&
       sameList(effective.deny, asRuleList(profile.deny)) &&
       effective.ask.length === 0
@@ -268,49 +334,106 @@ function writeFileAtomic(filePath, content) {
   const dir = path.dirname(filePath);
   const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`);
   fs.writeFileSync(tempPath, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  // rename replaces the directory entry itself, so a link standing in place of
+  // the file is replaced rather than written through.
   fs.renameSync(tempPath, filePath);
+}
+
+function assertRealDirectory(dirPath, what) {
+  const stat = fs.lstatSync(dirPath);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`Refusing to use ${what} ${dirPath}: it is a link or not a directory.`);
+  }
+  if (process.platform !== "win32" && typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error(`Refusing to use ${what} ${dirPath}: it belongs to another user.`);
+  }
+  return stat;
+}
+
+/**
+ * The isolation rests on each profile's home being its own directory. A home
+ * root, home or settings folder that is a link (a symlink, or a junction on
+ * Windows) could make two profiles share one settings file again, so any link
+ * on that path, any directory owned by someone else, or two profile homes that
+ * are physically the same directory, stops the run.
+ */
+export function assertPrivateHomes(homeRoot) {
+  fs.mkdirSync(homeRoot, { recursive: true, mode: 0o700 });
+  assertRealDirectory(homeRoot, "the agy home root");
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(homeRoot, 0o700);
+    } catch {
+      // checked above that it is ours; best effort
+    }
+  }
+  const seen = new Map();
+  for (const profileName of Object.keys(PERMISSION_PROFILES)) {
+    const home = path.join(homeRoot, profileName);
+    let current = home;
+    for (const part of ["", ".gemini", "antigravity-cli"]) {
+      current = part ? path.join(current, part) : current;
+      if (!fs.existsSync(current) && !isLink(current)) {
+        break;
+      }
+      const stat = assertRealDirectory(current, `the ${profileName} agy home`);
+      if (!part) {
+        const identity = `${stat.dev}:${stat.ino}`;
+        if (seen.has(identity)) {
+          throw new Error(`Refusing to run: the ${profileName} and ${seen.get(identity)} agy homes are the same directory.`);
+        }
+        seen.set(identity, profileName);
+      }
+    }
+  }
+}
+
+function isLink(filePath) {
+  try {
+    return fs.lstatSync(filePath).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Make sure a profile's agy home exists and its settings hold that profile.
  *
- * The file is only rewritten when it differs in substance. agy itself rewrites
- * the file atomically, and leaves it alone once it is in its normalised form
- * (both measured), so in the steady state nobody writes it at all; when the
- * bridge does write, it writes atomically too. A reader can therefore never see
- * a half-written file, and since every writer of this home writes the same
- * profile, never another profile either.
+ * The file is only rewritten when it differs: any difference in a setting,
+ * any key the bridge did not write, or a link where the file should be. agy
+ * itself rewrites the file atomically, and leaves it alone once it is in its
+ * normalised form (both measured), so in the steady state nobody writes it at
+ * all; when the bridge does write, it writes atomically too. A reader can
+ * therefore never see a half-written file, and since every writer of this home
+ * writes the same profile, never another profile either.
  *
  * The home also gets a `.gitconfig` that includes the user's own, because agy
  * passes its home on to the commands it runs and git would otherwise lose the
  * user's name, email and safe directories.
  */
 export function prepareAgyHome(home, profileName, options = {}) {
+  assertProfile(profileName);
+  assertPrivateHomes(path.dirname(home));
   const settingsFile = resolveAgySettingsFile(home);
   fs.mkdirSync(path.dirname(settingsFile), { recursive: true, mode: 0o700 });
+  assertPrivateHomes(path.dirname(home));
   const realHome = options.realHome ?? os.homedir();
   const model = options.model === undefined ? readUserAgyModel(realHome) : options.model;
   const desired = buildAgySettings(profileName, { model });
 
   let current = null;
   try {
-    current = effectiveSettings(readJsonFile(settingsFile));
+    current = effectiveSettings(readSettingsFileStrict(settingsFile));
   } catch {
     current = null;
   }
-  const wanted = effectiveSettings(desired);
-  const same =
-    current &&
-    Object.keys(wanted).every((key) =>
-      Array.isArray(wanted[key]) ? sameList(current[key], wanted[key]) : current[key] === wanted[key]
-    );
-  if (!same) {
+  if (!current || !sameEffective(current, effectiveSettings(desired))) {
     writeFileAtomic(settingsFile, `${JSON.stringify(desired, null, 2)}\n`);
   }
 
   const gitconfig = path.join(home, ".gitconfig");
   const realGitconfig = path.join(realHome, ".gitconfig").replace(/\\/g, "/");
-  if (path.resolve(realHome) !== path.resolve(home) && !fs.existsSync(gitconfig) && !/[\r\n"]/.test(realGitconfig)) {
+  if (path.resolve(realHome) !== path.resolve(home) && !fs.existsSync(gitconfig) && !isLink(gitconfig) && !/[\r\n"]/.test(realGitconfig)) {
     try {
       fs.writeFileSync(gitconfig, `[include]\n\tpath = ${realGitconfig}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     } catch {
@@ -324,26 +447,48 @@ function conversationFiles(home, conversationId) {
   const id = assertSafeCliValue("conversation", conversationId);
   const base = path.join(home, ".gemini", "antigravity-cli");
   return {
+    id,
+    base,
     db: path.join(base, "conversations", `${id}.db`),
     brain: path.join(base, "brain", id),
     annotation: path.join(base, "annotations", `${id}.pbtxt`)
   };
 }
 
-/** When a conversation database last changed, journal included; -1 when there is none. */
-function lastWriteMs(filePath) {
-  if (!fs.existsSync(filePath)) {
+/** When a conversation database last changed; -1 when there is no plain file. */
+function databaseWrittenMs(filePath) {
+  try {
+    const stat = fs.lstatSync(filePath);
+    return stat.isFile() ? stat.mtimeMs : -1;
+  } catch {
     return -1;
   }
-  let newest = -1;
-  for (const candidate of [filePath, `${filePath}-wal`]) {
-    try {
-      newest = Math.max(newest, fs.statSync(candidate).mtimeMs);
-    } catch {
-      // not there
-    }
+}
+
+function journalOf(dbPath) {
+  return [`${dbPath}-wal`, `${dbPath}-shm`].filter((candidate) => fs.existsSync(candidate) || isLink(candidate));
+}
+
+function assertNoLinksInTree(root) {
+  const stat = fs.lstatSync(root);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing to copy a conversation that contains a link: ${root}`);
   }
-  return newest;
+  if (stat.isDirectory()) {
+    for (const entry of fs.readdirSync(root)) {
+      assertNoLinksInTree(path.join(root, entry));
+    }
+  } else if (!stat.isFile()) {
+    throw new Error(`Refusing to copy a conversation entry that is not a plain file: ${root}`);
+  }
+}
+
+function replaceFileFrom(source, target) {
+  const staged = `${target}.agy-cc-${process.pid}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+  fs.copyFileSync(source, staged, fs.constants.COPYFILE_EXCL);
+  const { atime, mtime } = fs.statSync(source);
+  fs.utimesSync(staged, atime, mtime);
+  fs.renameSync(staged, target);
 }
 
 /**
@@ -352,20 +497,30 @@ function lastWriteMs(filePath) {
  * agy keeps a conversation in its home directory (`conversations/<id>.db`, the
  * `brain/<id>` artifacts and `annotations/<id>.pbtxt`), and a copy of those in
  * another home resumes there (measured). A read-only investigation continued
- * with `--write` therefore moves its conversation into the write profile's home
- * first. Returns the home the conversation was copied from, or null when the
- * target already had the newest copy or none exists.
+ * with `--write` therefore moves its conversation into the write profile's
+ * home first.
+ *
+ * The copy is refused while either side has a SQLite journal next to the
+ * database (agy has it open, or was killed mid-write), and when anything in it
+ * is a link or not a plain file. Artifacts are copied to a staging directory
+ * and swapped in, and the database — the file whose time decides which copy is
+ * newest — is replaced last, atomically and with the source's timestamp, so a
+ * copy that fails half-way leaves the source still the newest and is redone on
+ * the next attempt.
+ *
+ * Returns the home the conversation was copied from, or null when the target
+ * already had the newest copy or none exists.
  */
 export function syncConversationInto(homeRoot, targetHome, conversationId) {
   const target = conversationFiles(targetHome, conversationId);
   let newestHome = null;
-  let newestMs = lastWriteMs(target.db);
+  let newestMs = databaseWrittenMs(target.db);
   for (const profileName of Object.keys(PERMISSION_PROFILES)) {
     const home = path.join(homeRoot, profileName);
     if (path.resolve(home) === path.resolve(targetHome)) {
       continue;
     }
-    const written = lastWriteMs(conversationFiles(home, conversationId).db);
+    const written = databaseWrittenMs(conversationFiles(home, conversationId).db);
     if (written > newestMs) {
       newestMs = written;
       newestHome = home;
@@ -376,25 +531,45 @@ export function syncConversationInto(homeRoot, targetHome, conversationId) {
   }
 
   const source = conversationFiles(newestHome, conversationId);
-  fs.mkdirSync(path.dirname(target.db), { recursive: true, mode: 0o700 });
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const from = `${source.db}${suffix}`;
-    const to = `${target.db}${suffix}`;
-    if (fs.existsSync(from)) {
-      fs.copyFileSync(from, to);
-    } else {
-      // A stale journal next to a newer database would corrupt it.
-      fs.rmSync(to, { force: true });
+  for (const dbPath of [source.db, target.db]) {
+    if (journalOf(dbPath).length > 0) {
+      throw new Error(
+        `Conversation ${target.id} looks open in another agy run (a SQLite journal sits next to ${dbPath}). Wait for that run to finish, or start a fresh conversation.`
+      );
     }
   }
-  if (fs.existsSync(source.brain)) {
-    fs.mkdirSync(path.dirname(target.brain), { recursive: true, mode: 0o700 });
-    fs.cpSync(source.brain, target.brain, { recursive: true, force: true, dereference: false, verbatimSymlinks: true });
+  assertNoLinksInTree(source.db);
+  const hasBrain = fs.existsSync(source.brain) || isLink(source.brain);
+  const hasAnnotation = fs.existsSync(source.annotation) || isLink(source.annotation);
+  if (hasBrain) {
+    assertNoLinksInTree(source.brain);
   }
-  if (fs.existsSync(source.annotation)) {
-    fs.mkdirSync(path.dirname(target.annotation), { recursive: true, mode: 0o700 });
-    fs.copyFileSync(source.annotation, target.annotation);
+  if (hasAnnotation) {
+    assertNoLinksInTree(source.annotation);
   }
+
+  for (const dir of [path.dirname(target.db), path.dirname(target.brain), path.dirname(target.annotation)]) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    assertRealDirectory(dir, "a conversation directory");
+  }
+
+  if (hasBrain) {
+    const staged = fs.mkdtempSync(path.join(path.dirname(target.brain), `.${target.id}.staging-`));
+    fs.cpSync(source.brain, staged, { recursive: true, force: true, errorOnExist: false, preserveTimestamps: true });
+    let aside = null;
+    if (fs.existsSync(target.brain) || isLink(target.brain)) {
+      aside = `${target.brain}.agy-cc-old-${Math.random().toString(36).slice(2, 8)}`;
+      fs.renameSync(target.brain, aside);
+    }
+    fs.renameSync(staged, target.brain);
+    if (aside) {
+      fs.rmSync(aside, { recursive: true, force: true });
+    }
+  }
+  if (hasAnnotation) {
+    replaceFileFrom(source.annotation, target.annotation);
+  }
+  replaceFileFrom(source.db, target.db);
   return newestHome;
 }
 
@@ -491,15 +666,22 @@ function firstLine(text) {
     .find(Boolean);
 }
 
+// Progress is best effort. A reporter that throws (a full disk under the run
+// log, say) must not abort a run half-way, after agy has been spawned and
+// before its exit is being watched.
 function emitProgress(onProgress, message, phase = null, extra = {}) {
   if (!onProgress || !message) {
     return;
   }
-  if (!phase && Object.keys(extra).length === 0) {
-    onProgress(message);
-    return;
+  try {
+    if (!phase && Object.keys(extra).length === 0) {
+      onProgress(message);
+      return;
+    }
+    onProgress({ message, phase, ...extra });
+  } catch {
+    // ignored on purpose
   }
-  onProgress({ message, phase, ...extra });
 }
 
 // Flag values reach the child as separate argv entries, so a value that starts
@@ -840,7 +1022,7 @@ export async function runHeadlessAgent(cwd, options = {}) {
     emitProgress(options.onProgress, `Running agy (${binary}).`, "starting", {
       threadId: options.resumeConversationId ?? null,
       agentPid,
-      agentBinary: binary,
+      agentBinary: resolveExecutable(binary, env) ?? binary,
       pid: agentPid
     });
 

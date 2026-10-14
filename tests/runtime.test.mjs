@@ -297,10 +297,14 @@ test("stop terminates a tracked sleeper process and marks run cancelled", () => 
   // Stopping a run verifies that the pid still looks like something this plugin
   // started before signalling it, so the stand-ins have to carry a matching
   // command line rather than being anonymous `node -e` processes.
-  const agentStub = path.join(repo, "agy-stub-bin/agy");
-  const bridgeStub = path.join(repo, "agy-bridge.mjs.stub.mjs");
+  // The agent stand-in is node itself, recorded as the job's agent binary the
+  // way a real run records the agy it launched; the bridge stand-in is a
+  // script named like the bridge worker.
+  const agentStub = path.join(repo, "agy-stub-bin", "agent-stub.mjs");
+  const bridgeStub = path.join(repo, "bridge-stub", "agy-bridge.mjs");
   const stubSource = "setInterval(() => {}, 1000);";
   fs.mkdirSync(path.dirname(agentStub), { recursive: true });
+  fs.mkdirSync(path.dirname(bridgeStub), { recursive: true });
   fs.writeFileSync(agentStub, stubSource, "utf8");
   fs.writeFileSync(bridgeStub, stubSource, "utf8");
 
@@ -340,6 +344,7 @@ test("stop terminates a tracked sleeper process and marks run cancelled", () => 
       bridgePid,
       pid: bridgePid,
       agentPid,
+      agentBinary: process.execPath,
       logFile,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()

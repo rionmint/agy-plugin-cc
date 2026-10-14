@@ -114,3 +114,27 @@ test("renderImageResult reports the saved file or the reason there is none", () 
   assert.match(missing, /No image was produced\./);
   assert.match(missing, /without producing an image/);
 });
+
+test("review validation follows the schema exactly", async () => {
+  const { validateReviewResultShape } = await import("../plugins/agy-cc/scripts/lib/render.mjs");
+  const finding = {
+    severity: "high",
+    title: "t",
+    body: "b",
+    file: "a.js",
+    line_start: 1,
+    line_end: 2,
+    confidence: 0.5,
+    recommendation: "r"
+  };
+  const good = { verdict: "approve", summary: "ok", findings: [finding], next_steps: ["x"] };
+  assert.equal(validateReviewResultShape(good), null);
+  assert.match(validateReviewResultShape({ ...good, extra: 1 }), /Unexpected top-level/);
+  assert.match(validateReviewResultShape({ ...good, findings: [{ ...finding, extra: 1 }] }), /Unexpected field/);
+  assert.match(validateReviewResultShape({ ...good, verdict: " approve " }), /verdict/);
+  assert.match(validateReviewResultShape({ ...good, verdict: "banana" }), /verdict/);
+  assert.match(validateReviewResultShape({ ...good, findings: [null] }), /must be an object/);
+  assert.match(validateReviewResultShape({ ...good, findings: [{ ...finding, confidence: 2 }] }), /confidence/);
+  assert.match(validateReviewResultShape({ ...good, findings: [{ ...finding, line_end: 0 }] }), /line_end/);
+  assert.match(validateReviewResultShape({ ...good, next_steps: [42] }), /next_steps\[0\]/);
+});

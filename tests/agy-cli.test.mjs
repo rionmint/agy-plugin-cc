@@ -36,7 +36,8 @@ import {
   resolvePermissionProfile,
   runAgyWithRecovery,
   runHeadlessAgent,
-  settingsMatchProfile
+  settingsMatchProfile,
+  assertPrivateHomes
 } from "../plugins/agy-cc/scripts/lib/agy.mjs";
 import { buildCmdLine, runCommand } from "../plugins/agy-cc/scripts/lib/process.mjs";
 import { buildProcessMarkers, OUR_PROCESS_MARKERS } from "../plugins/agy-cc/scripts/lib/tracked-jobs.mjs";
@@ -533,16 +534,17 @@ test("a batch file path that cmd would rewrite is refused", () => {
   assert.match(buildCmdLine(String.raw`C:\Program Files\agy\agy.cmd`, ["x"]), /"C:\\Program Files\\agy\\agy\.cmd"/);
 });
 
-test("the process markers match the recorded binary as a whole token only", () => {
+test("the process markers match the recorded program at the start of the command line only", () => {
   assert.deepEqual(buildProcessMarkers([]), [...OUR_PROCESS_MARKERS]);
-  assert.deepEqual(buildProcessMarkers(["C:\\bin\\agy.exe", null]), [...OUR_PROCESS_MARKERS]);
-  const markers = buildProcessMarkers(["/opt/ag", "C:\\tools\\antigravity-cli.exe"]);
+  const markers = buildProcessMarkers(["/opt/ag", String.raw`C:\tools\antigravity-cli.exe`, String.raw`C:\tools\agy.cmd`]);
   const matches = (line) => markers.some((marker) => (marker instanceof RegExp ? marker.test(line) : line.includes(marker)));
   assert.equal(matches("/opt/ag -p=x --output-format stream-json"), true, "a short name still counts");
-  assert.equal(matches('"C:\\tools\\antigravity-cli.exe" -p=x'), true);
-  assert.equal(matches("C:\\tools\\ANTIGRAVITY-CLI.cmd -p=x"), true, "case and shim extension");
-  assert.equal(matches("/usr/bin/antigravity-cli-backup --run"), false, "not as part of a longer name");
-  assert.equal(matches("/usr/bin/bag x"), false);
+  assert.equal(matches(String.raw`"C:\tools\antigravity-cli.exe" -p=x`), true);
+  assert.equal(matches(String.raw`c:\TOOLS\ANTIGRAVITY-CLI.exe -p=x`), true, "Windows paths compare case-insensitively");
+  assert.equal(matches(String.raw`C:\WINDOWS\system32\cmd.exe /d /s /c ""C:\tools\agy.cmd" ^"-p=x^""`), true, "the recorded shim");
+  assert.equal(matches("/other/tools/ag -p=x"), false, "same name in another directory");
+  assert.equal(matches("/usr/bin/foo /opt/ag"), false, "only as an argument");
+  assert.equal(matches("/usr/bin/antigravity-cli-backup --run"), false);
 });
 
 test("settingsMatchProfile never throws and rejects malformed rule lists", () => {
@@ -554,6 +556,11 @@ test("settingsMatchProfile never throws and rejects malformed rule lists", () =>
     { permissions: { allow: [1], deny: [] } },
     { permissions: [] },
     { toolPermission: 7, permissions: { allow: ["read_url(*)"], deny: [...PERMISSION_PROFILES["read-only"].deny] } },
+    { toolPermission: null, permissions: { allow: ["read_url(*)"], deny: [...PERMISSION_PROFILES["read-only"].deny] } },
+    { permissions: { allow: ["read_url(*)"], deny: [...PERMISSION_PROFILES["read-only"].deny], ask: null } },
+    { trustedWorkspaces: ["C:\\"], permissions: { allow: ["read_url(*)"], deny: [...PERMISSION_PROFILES["read-only"].deny] } },
+    { artifactReviewPolicy: "always-proceed", permissions: { allow: ["read_url(*)"], deny: [...PERMISSION_PROFILES["read-only"].deny] } },
+    { permissions: { allow: ["read_url(*)"], deny: [...PERMISSION_PROFILES["read-only"].deny], extra: [] } },
     []
   ]) {
     fs.writeFileSync(file, JSON.stringify(broken));
@@ -579,33 +586,82 @@ test("prepareAgyHome leaves an equivalent normalised file alone", () => {
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).model, "Other", "a real difference is written");
 });
 
+function seedConversation(root, profile, cid, { db = "db-v1", brainFile = "artifact", annotation = "ann" } = {}) {
+  const base = path.join(root, profile, ".gemini", "antigravity-cli");
+  fs.mkdirSync(path.join(base, "conversations"), { recursive: true });
+  fs.writeFileSync(path.join(base, "conversations", `${cid}.db`), db);
+  if (brainFile !== null) {
+    fs.mkdirSync(path.join(base, "brain", cid, "scratch"), { recursive: true });
+    fs.writeFileSync(path.join(base, "brain", cid, "scratch", "note.txt"), brainFile);
+  }
+  if (annotation !== null) {
+    fs.mkdirSync(path.join(base, "annotations"), { recursive: true });
+    fs.writeFileSync(path.join(base, "annotations", `${cid}.pbtxt`), annotation);
+  }
+  return base;
+}
+
 test("a conversation started read-only is copied into the write home before it is resumed", () => {
   const root = makeTempDir();
   const cid = "abcdef12-0000-4000-8000-000000000001";
-  const source = path.join(root, "read-only", ".gemini", "antigravity-cli");
-  fs.mkdirSync(path.join(source, "conversations"), { recursive: true });
-  fs.mkdirSync(path.join(source, "brain", cid, "scratch"), { recursive: true });
-  fs.mkdirSync(path.join(source, "annotations"), { recursive: true });
-  fs.writeFileSync(path.join(source, "conversations", `${cid}.db`), "db-v1");
-  fs.writeFileSync(path.join(source, "brain", cid, "scratch", "note.txt"), "artifact");
-  fs.writeFileSync(path.join(source, "annotations", `${cid}.pbtxt`), "ann");
-
+  seedConversation(root, "read-only", cid);
   const writeHome = path.join(root, "write");
   const target = path.join(writeHome, ".gemini", "antigravity-cli");
-  fs.mkdirSync(path.join(target, "conversations"), { recursive: true });
-  fs.writeFileSync(path.join(target, "conversations", `${cid}.db-wal`), "stale journal");
+  fs.mkdirSync(path.join(target, "brain", cid), { recursive: true });
+  fs.writeFileSync(path.join(target, "brain", cid, "old.txt"), "older artifact");
 
   assert.equal(syncConversationInto(root, writeHome, cid), path.join(root, "read-only"));
   assert.equal(fs.readFileSync(path.join(target, "conversations", `${cid}.db`), "utf8"), "db-v1");
-  assert.equal(fs.existsSync(path.join(target, "conversations", `${cid}.db-wal`)), false, "a stale journal is removed");
   assert.equal(fs.readFileSync(path.join(target, "brain", cid, "scratch", "note.txt"), "utf8"), "artifact");
+  assert.equal(fs.existsSync(path.join(target, "brain", cid, "old.txt")), false, "artifacts are replaced, not merged");
   assert.equal(fs.readFileSync(path.join(target, "annotations", `${cid}.pbtxt`), "utf8"), "ann");
-
-  // Already newest in the target: nothing to do.
-  const later = new Date(Date.now() + 60000);
-  fs.utimesSync(path.join(target, "conversations", `${cid}.db`), later, later);
-  assert.equal(syncConversationInto(root, writeHome, cid), null);
+  const sourceDb = path.join(root, "read-only", ".gemini", "antigravity-cli", "conversations", `${cid}.db`);
+  assert.equal(
+    Math.round(fs.statSync(path.join(target, "conversations", `${cid}.db`)).mtimeMs),
+    Math.round(fs.statSync(sourceDb).mtimeMs),
+    "the copy keeps the source's time, so it does not look newer than it is"
+  );
+  assert.equal(syncConversationInto(root, writeHome, cid), null, "nothing newer elsewhere");
   assert.throws(() => syncConversationInto(root, writeHome, "../escape"), /unsafe conversation value/);
+});
+
+test("a conversation with an open journal on either side is not copied", () => {
+  const root = makeTempDir();
+  const cid = "abcdef12-0000-4000-8000-000000000002";
+  const source = seedConversation(root, "read-only", cid);
+  fs.writeFileSync(path.join(source, "conversations", `${cid}.db-shm`), "open");
+  assert.throws(() => syncConversationInto(root, path.join(root, "write"), cid), /looks open in another agy run/);
+  fs.rmSync(path.join(source, "conversations", `${cid}.db-shm`));
+
+  const target = path.join(root, "write", ".gemini", "antigravity-cli", "conversations");
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(target, `${cid}.db-wal`), "stale");
+  assert.throws(() => syncConversationInto(root, path.join(root, "write"), cid), /looks open in another agy run/);
+});
+
+test("a conversation containing a link is not copied", () => {
+  const root = makeTempDir();
+  const cid = "abcdef12-0000-4000-8000-000000000003";
+  const source = seedConversation(root, "read-only", cid);
+  const outside = path.join(makeTempDir(), "secret.txt");
+  fs.writeFileSync(outside, "do not copy");
+  try {
+    fs.symlinkSync(outside, path.join(source, "brain", cid, "scratch", "link.txt"), "file");
+  } catch {
+    // creating symlinks needs a privilege on some Windows set-ups; nothing to test then
+    return;
+  }
+  assert.throws(() => syncConversationInto(root, path.join(root, "write"), cid), /contains a link/);
+  assert.equal(fs.existsSync(path.join(root, "write", ".gemini", "antigravity-cli", "conversations", `${cid}.db`)), false);
+});
+
+test("profile homes that are links or the same directory stop the run", () => {
+  const root = makeTempDir();
+  fs.mkdirSync(path.join(root, "read-only"), { recursive: true });
+  // A junction needs no privilege on Windows; elsewhere it is a symlink.
+  fs.symlinkSync(path.join(root, "read-only"), path.join(root, "write"), "junction");
+  assert.throws(() => assertPrivateHomes(root), /link or not a directory/);
+  assert.throws(() => prepareAgyHome(path.join(root, "write"), "write", { realHome: makeTempDir(), model: null }), /link or not a directory/);
 });
 
 test("a resumed run picks its conversation up from another profile home", async () => {
@@ -650,4 +706,15 @@ test("prompt cleanup leaves a directory that was swapped out from under it", () 
   fs.writeFileSync(path.join(delivery.promptDir, "prompt.md"), "not ours");
   removePromptDelivery(delivery);
   assert.equal(fs.readFileSync(path.join(delivery.promptDir, "prompt.md"), "utf8"), "not ours");
+});
+
+test("prepareAgyHome rewrites a file with keys it did not write", () => {
+  const home = path.join(makeTempDir(), "read-only");
+  const file = prepareAgyHome(home, "read-only", { realHome: makeTempDir(), model: null });
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), enableTelemetry: false, trustedWorkspaces: ["C:\\"] }));
+  prepareAgyHome(home, "read-only", { realHome: makeTempDir(), model: null });
+  const written = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(written.trustedWorkspaces, undefined);
+  assert.equal(written.enableTelemetry, undefined);
+  assert.equal(settingsMatchProfile(file, "read-only"), true);
 });

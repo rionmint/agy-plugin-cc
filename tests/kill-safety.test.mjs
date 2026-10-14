@@ -93,14 +93,21 @@ test("the agy binary is recognised on every platform's command line", () => {
   for (const line of [
     String.raw`"C:\Users\me\AppData\Local\agy\bin\agy.exe" -p=hello --output-format stream-json`,
     "/Users/me/.local/bin/agy -p=hello --output-format stream-json",
-    String.raw`node C:\tmp\bin\agy -p=x`
+    String.raw`C:\WINDOWS\system32\cmd.exe /d /s /c ""C:\tmp\bin\agy.cmd" ^"-p=x^""`
   ]) {
     assert.equal(processLooksLikeOurs(1, OUR_MARKERS, { platform: "linux", runCommandImpl: fakeCommandLine(line) }), true, line);
   }
 });
 
 test("words that merely contain agy are not ours", () => {
-  for (const line of ["/usr/bin/strategy-runner", String.raw`C:\apps\agyfoo.exe`, "/opt/legacy/bin/run"]) {
+  for (const line of [
+    "/usr/bin/strategy-runner",
+    String.raw`C:\apps\agyfoo.exe`,
+    "/opt/legacy/bin/run",
+    String.raw`C:\tools\editor.exe C:\Users\me\AppData\Local\agy\bin\agy.exe`,
+    String.raw`node C:\tmp\bin\agy -p=x`,
+    "/usr/bin/vim /home/me/plugins/agy-cc/scripts/agy-bridge.mjs"
+  ]) {
     assert.equal(processLooksLikeOurs(1, OUR_MARKERS, { platform: "linux", runCommandImpl: fakeCommandLine(line) }), false, line);
   }
 });

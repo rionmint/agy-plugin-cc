@@ -118,11 +118,13 @@ profile a run needs, and keeps that home's `settings.json` holding that profile 
 - **No shared settings to race over.** Because a profile's settings never change, two runs can start
   at the same moment without one handing the other the wrong permissions, and no lock is needed. agy
   rewrites its settings file atomically and leaves it alone once it is in its own normalised form
-  (both measured), and the bridge only writes it when it differs, atomically too.
+  (both measured), and the bridge only writes it when it differs, atomically too. A home that is a
+  link (symlink or junction), belongs to another user, or is physically the same directory as another
+  profile's home stops the run.
 - **Conversations follow the run.** agy stores a conversation in its home. When a read-only
   investigation is continued with `--write`, the bridge copies that conversation into the write
   profile's home first (copying a conversation into another home and resuming it there was measured
-  to work).
+  to work). The copy is refused while agy has that conversation open, or if it contains links.
 - **Every run is checked at start.** When agy reports its first event, the bridge checks that agy
   started in `request-review` and that the home's settings file holds exactly this run's rules. A run
   that fails either check, never reports that event, or takes more than 90 seconds to start is
