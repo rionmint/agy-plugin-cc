@@ -1,0 +1,11 @@
+{
+  "name": "cursor-cc",
+  "version": "0.2.4",
+  "description": "Cursor CLI <-> Claude Code bridge for review, critique, and delegation.",
+  "author": {
+    "name": "rionmint"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/rionmint/cursor-plugin-cc",
+  "repository": "https://github.com/rionmint/cursor-plugin-cc"
+}

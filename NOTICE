@@ -1,0 +1,73 @@
+cursor-plugin-cc — Cursor CLI bridge for Claude Code
+Copyright 2026 rionmint
+
+This product is a derivative work of the Grok Build plugin for Claude Code
+(https://github.com/xai-org/grok-build-plugin-cc), used under the Apache
+License, Version 2.0. The following notice is reproduced from that project as
+required by section 4(d) of the License:
+
+    ---------------------------------------------------------------------
+    Grok Build Plugin for Claude Code
+    Copyright 2026 xAI
+
+    Layout inspiration for the Claude Code marketplace plugin structure draws
+    briefly from community plugin packaging patterns; the product surface,
+    commands, and runtime here are Grok-native and shell out to the Grok Build
+    CLI.
+    ---------------------------------------------------------------------
+
+Statement of changes (Apache-2.0 section 4(b))
+----------------------------------------------
+
+Every file inherited from the upstream project has been modified. The
+substantive changes are:
+
+  * The CLI adapter layer (`scripts/lib/grok.mjs`) was replaced by
+    `scripts/lib/cursor.mjs`, which drives the Cursor CLI (`cursor-agent`)
+    instead of the Grok Build CLI (`grok`).
+  * Working-directory selection moved from `--cwd` to `--workspace`.
+  * Read-only execution moved from `--sandbox read-only` (a sandbox profile
+    that is not enforced on Windows) to Cursor's `--mode ask` / `--mode plan`
+    execution modes.
+  * Headless runs now pass `--trust`, because a headless Cursor run otherwise
+    stops on the workspace-trust prompt.
+  * The reasoning-effort flag (`--effort`) was removed; Cursor carries effort
+    in the model id instead (for example `gpt-5.6-sol-xhigh`).
+  * Structured output no longer uses a `--json-schema` flag, which Cursor does
+    not have; the schema is supplied in the prompt and the response envelope
+    from `--output-format json` is unwrapped before parsing.
+  * Session ids are read back from Cursor's result envelope rather than being
+    assigned before the run.
+  * The Claude-session import command (`grok import`) and its supporting module
+    were removed; the Cursor CLI has no equivalent.
+  * The authentication probe uses `cursor-agent status` (and `CURSOR_API_KEY` /
+    `CURSOR_AUTH_TOKEN`) rather than a models probe.
+  * Binary override renamed from `GROK_BINARY` to `CURSOR_AGENT_BINARY`, and
+    the session environment variable from `GROK_CC_SESSION_ID` to
+    `CURSOR_CC_SESSION_ID`.
+  * All command, agent, skill, and marketplace identifiers were renamed from
+    `grok-build` to `cursor-cc`.
+
+Trademarks
+----------
+
+This is an unofficial, community-maintained project. It is not affiliated with,
+endorsed by, or sponsored by Anysphere, Inc. (Cursor), xAI, OpenAI, or
+Anthropic. "Cursor", "Grok", and "Claude" are trademarks of their respective
+owners and are used here only to describe interoperability. The Apache License
+does not grant any trademark rights (section 6).
+
+License
+-------
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
