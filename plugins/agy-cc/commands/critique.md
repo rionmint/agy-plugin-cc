@@ -53,7 +53,7 @@ Argument handling (security):
 Foreground flow:
 - Run:
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" critique '$ARGUMENTS'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" critique --plugin-data "${CLAUDE_PLUGIN_DATA}" '$ARGUMENTS'
 ```
 - Return the command stdout verbatim, exactly as-is.
 - Do not paraphrase, summarize, or add commentary before or after it.
@@ -64,7 +64,7 @@ Background flow:
 - Launch with `Bash` (Claude may still use `run_in_background: true` for the short enqueue call; the long-running work is the bridge `run-worker`):
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" critique --background '$ARGUMENTS'`,
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" critique --plugin-data "${CLAUDE_PLUGIN_DATA}" --background '$ARGUMENTS'`,
   description: "agy critique",
   run_in_background: true
 })

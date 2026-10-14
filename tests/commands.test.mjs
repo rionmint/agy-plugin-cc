@@ -7,9 +7,39 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "agy-cc");
 
-function read(relativePath) {
+const DATA_FLAG = ' --plugin-data "${CLAUDE_PLUGIN_DATA}"';
+
+function readRaw(relativePath) {
   return fs.readFileSync(path.join(PLUGIN_ROOT, relativePath), "utf8");
 }
+
+// The checks below are about what each surface asks the bridge to do; the
+// data-directory flag every invocation carries is checked once, on its own.
+function read(relativePath) {
+  return readRaw(relativePath).replaceAll(DATA_FLAG, "");
+}
+
+test("every bridge invocation passes the plugin's own data directory", () => {
+  let invocations = 0;
+  for (const file of [
+    "commands/check.md",
+    "commands/review.md",
+    "commands/critique.md",
+    "commands/delegate.md",
+    "commands/image.md",
+    "commands/runs.md",
+    "commands/show.md",
+    "commands/stop.md",
+    "agents/agy-delegate.md",
+    "skills/agy-delegate-runtime/SKILL.md"
+  ]) {
+    for (const match of readRaw(file).matchAll(/agy-bridge\.mjs" ([a-z-]+)([^\n`]*)/g)) {
+      invocations += 1;
+      assert.ok(match[2].startsWith(DATA_FLAG), `${file}: ${match[0]}`);
+    }
+  }
+  assert.ok(invocations >= 14, `found ${invocations} invocations`);
+});
 
 const SURFACE_FILES = [
   "commands/check.md",

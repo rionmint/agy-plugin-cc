@@ -7,7 +7,7 @@ allowed-tools: Bash(node:*), AskUserQuestion
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" check --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" check --plugin-data "${CLAUDE_PLUGIN_DATA}" --json
 ```
 
 If the result says agy is unavailable:

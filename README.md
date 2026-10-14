@@ -176,7 +176,15 @@ cd <repository> && agy -p=<prompt> --output-format stream-json --print-timeout 3
 | `AGY_BINARY` | Override the `agy` executable path |
 | `AGY_CC_HOME` | Override the directory that holds the plugin's agy homes (one per profile) |
 | `AGY_CC_SESSION_ID` | Claude session id (set by the SessionStart hook) |
-| `CLAUDE_PLUGIN_DATA` | Where run state, logs and the agy home are written |
+| `AGY_CC_PLUGIN_DATA` | Where run state, logs and the agy homes are written. Set by the SessionStart hook and by the `--plugin-data` flag every command passes |
+| `CLAUDE_PLUGIN_DATA` | Fallback for the above (hooks, or running the bridge by hand) |
+
+Why a variable of its own: Claude Code gives each plugin its own `CLAUDE_PLUGIN_DATA` in hooks and in
+command text, but not in Bash calls. There the variable is whatever a plugin's SessionStart hook last
+exported into the session — with several bridge plugins installed (Codex, Grok, Cursor), usually
+another plugin's directory. So the commands pass `--plugin-data "${CLAUDE_PLUGIN_DATA}"`, which Claude
+Code fills in from the command text, and the hook exports `AGY_CC_PLUGIN_DATA` rather than the shared
+name.
 
 ---
 

@@ -164,7 +164,7 @@ export function getSessionRuntimeStatus() {
   return {
     mode: "plugin-owned",
     label: "plugin-owned runs",
-    detail: "Runs are tracked by the agy ↔ Claude Code bridge (PID + log files). There is no shared app-server broker.",
+    detail: "Runs are tracked by the agy <-> Claude Code bridge (PID + log files). There is no shared app-server broker.",
     endpoint: null
   };
 }

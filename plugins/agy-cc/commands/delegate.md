@@ -25,7 +25,7 @@ Execution mode:
 - Otherwise, before starting agy, check for a resumable delegate thread from this Claude session by running:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" run-resume-candidate --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" run-resume-candidate --plugin-data "${CLAUDE_PLUGIN_DATA}" --json
 ```
 
 - If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue the current agy thread or start a new one.
@@ -40,7 +40,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" run-resume-candidate --json
 
 Operating rules:
 
-- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" run ...` and return that command's stdout as-is.
+- The subagent is a thin forwarder only. It should use one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" run --plugin-data "${CLAUDE_PLUGIN_DATA}" ...` and return that command's stdout as-is.
 - Return the agy bridge stdout verbatim to the user.
 - Do not paraphrase, summarize, rewrite, or add commentary before or after it.
 - Do not ask the subagent to inspect files, monitor progress, poll `/agy-cc:runs`, fetch `/agy-cc:show`, call `/agy-cc:stop`, summarize output, or do follow-up work of its own.

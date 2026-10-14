@@ -42,6 +42,8 @@ import {
 } from "../plugins/agy-cc/scripts/lib/agy.mjs";
 import { buildCmdLine, runCommand } from "../plugins/agy-cc/scripts/lib/process.mjs";
 import { buildProcessMarkers, OUR_PROCESS_MARKERS } from "../plugins/agy-cc/scripts/lib/tracked-jobs.mjs";
+import { resolvePluginDataDir } from "../plugins/agy-cc/scripts/lib/state.mjs";
+import { takePluginDataOption } from "../plugins/agy-cc/scripts/agy-bridge.mjs";
 
 function fakeSetup(scenario = "default", extra = {}) {
   const binDir = makeTempDir();
@@ -67,6 +69,29 @@ test("each permission profile has its own agy home under one root", () => {
   assert.equal(resolveAgyHome("read-only", env), path.join("/data", "agy-homes", "read-only"));
   assert.equal(resolveAgyHome("write-commands", env), path.join("/data", "agy-homes", "write-commands"));
   assert.throws(() => resolveAgyHome("../../etc", env), /Unknown permission profile/);
+});
+
+test("the plugin's own data directory wins over a CLAUDE_PLUGIN_DATA another plugin exported", () => {
+  const env = { CLAUDE_PLUGIN_DATA: "/data/cursor-cc-rionmint-cursor-cc", AGY_CC_PLUGIN_DATA: "/data/agy-cc-rionmint-agy-cc" };
+  assert.equal(resolvePluginDataDir(env), "/data/agy-cc-rionmint-agy-cc");
+  assert.equal(resolveAgyHomeRoot(env), path.join("/data/agy-cc-rionmint-agy-cc", "agy-homes"));
+  assert.equal(resolvePluginDataDir({ CLAUDE_PLUGIN_DATA: "/data/x", AGY_CC_PLUGIN_DATA: "  " }), "/data/x");
+  assert.equal(resolvePluginDataDir({}), null);
+});
+
+test("--plugin-data is taken off the command line wherever it is and becomes AGY_CC_PLUGIN_DATA", () => {
+  const env = { CLAUDE_PLUGIN_DATA: "/other-plugin" };
+  assert.deepEqual(takePluginDataOption(["check", "--plugin-data", "/mine", "--json"], env), ["check", "--json"]);
+  assert.equal(env.AGY_CC_PLUGIN_DATA, path.resolve("/mine"));
+  const inline = {};
+  assert.deepEqual(takePluginDataOption(["review", "--plugin-data=/x y", "--base main"], inline), ["review", "--base main"]);
+  assert.equal(inline.AGY_CC_PLUGIN_DATA, path.resolve("/x y"));
+  const empty = {};
+  assert.deepEqual(takePluginDataOption(["runs", "--plugin-data", ""], empty), ["runs"]);
+  assert.equal(empty.AGY_CC_PLUGIN_DATA, undefined, "an unexpanded or empty value is ignored");
+  const untouched = {};
+  assert.deepEqual(takePluginDataOption(["run", "fix it --plugin-data /evil"], untouched), ["run", "fix it --plugin-data /evil"]);
+  assert.equal(untouched.AGY_CC_PLUGIN_DATA, undefined, "text inside the raw arguments is not an option");
 });
 
 test("agyChildEnv swaps USERPROFILE on Windows and leaves HOME alone", () => {

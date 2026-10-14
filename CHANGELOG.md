@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 — 2026-10-14
+
+- **Uses its own data directory next to other bridge plugins.** In a Bash call `CLAUDE_PLUGIN_DATA` is
+  whatever a plugin's SessionStart hook last exported into the session; with the Codex, Grok or
+  Cursor plugin installed that was their directory, so agy homes and run state landed there (seen on
+  the first install: `/agy-cc:check` reported its agy home under the Cursor plugin's data folder).
+  Every command now passes `--plugin-data "${CLAUDE_PLUGIN_DATA}"`, which Claude Code fills in per
+  plugin, the bridge prefers that (as `AGY_CC_PLUGIN_DATA`), and the hook exports
+  `AGY_CC_PLUGIN_DATA` instead of the shared `CLAUDE_PLUGIN_DATA`, so it no longer hands its
+  directory to other plugins either.
+- Tests start every test file with a plugin data directory of their own and remove the temp
+  directories they create, instead of inheriting the shell's `CLAUDE_PLUGIN_DATA`.
+- The bridge's own text uses `<->` instead of an arrow character.
+
 ## 0.1.0 — 2026-10-14
 
 First release. Ported from [cursor-plugin-cc](https://github.com/rionmint/cursor-plugin-cc) 0.2.4,

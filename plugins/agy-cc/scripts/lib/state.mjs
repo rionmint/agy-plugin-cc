@@ -7,6 +7,7 @@ import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+export const PLUGIN_DATA_OVERRIDE_ENV = "AGY_CC_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "agy-cc-runs");
 const STATE_FILE_NAME = "state.json";
 const LOCK_FILE_NAME = "state.json.lock";
@@ -46,6 +47,26 @@ function resolveBridgePidField(existing = {}, patch = {}) {
   return existing.bridgePid ?? existing.companionPid ?? null;
 }
 
+/**
+ * This plugin's data directory, or null outside Claude Code.
+ *
+ * Claude Code gives each plugin its own `CLAUDE_PLUGIN_DATA` only in hook
+ * processes and in command text. In a Bash call the variable is whatever a
+ * plugin's SessionStart hook last exported into the session, which with
+ * several plugins installed is usually another plugin's directory. So the
+ * bridge's own `AGY_CC_PLUGIN_DATA` (set from `--plugin-data`, which the
+ * commands fill from their own text, or exported by this plugin's hook) wins.
+ */
+export function resolvePluginDataDir(env = process.env) {
+  for (const name of [PLUGIN_DATA_OVERRIDE_ENV, PLUGIN_DATA_ENV]) {
+    const value = env?.[name];
+    if (value && String(value).trim()) {
+      return String(value).trim();
+    }
+  }
+  return null;
+}
+
 export function resolveStateDir(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
@@ -58,7 +79,7 @@ export function resolveStateDir(cwd) {
   const slugSource = path.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
+  const pluginDataDir = resolvePluginDataDir();
   const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
   return path.join(stateRoot, `${slug}-${hash}`);
 }

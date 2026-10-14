@@ -4,7 +4,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 import { terminateProcessTree } from "./lib/process.mjs";
-import { claimJobTerminal, loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { claimJobTerminal, loadState, PLUGIN_DATA_OVERRIDE_ENV, resolveStateFile, saveState } from "./lib/state.mjs";
 import { buildProcessMarkers, resolveJobKillTargets, SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
@@ -112,7 +112,10 @@ function cleanupSessionJobs(cwd, sessionId) {
 
 function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
-  appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
+  // The env file reaches every Bash call in the session, other plugins' too,
+  // so this plugin's directory goes out under its own name. Exporting the
+  // shared CLAUDE_PLUGIN_DATA would hand it to whichever plugin reads it next.
+  appendEnvVar(PLUGIN_DATA_OVERRIDE_ENV, process.env[PLUGIN_DATA_ENV]);
 }
 
 async function handleSessionEnd(input) {

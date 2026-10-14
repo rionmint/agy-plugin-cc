@@ -15,7 +15,7 @@ Argument handling (security):
 Run with the `Bash` tool, substituting the validated run id:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" runs '<run-id>' [--wait] [--timeout-ms <ms>] [--all]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" runs --plugin-data "${CLAUDE_PLUGIN_DATA}" '<run-id>' [--wait] [--timeout-ms <ms>] [--all]
 ```
 
 Omit the run id entirely when the user did not give one.

@@ -18,7 +18,7 @@ Selection guidance:
 
 Forwarding rules:
 
-- Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" run ...`.
+- Use exactly one `Bash` call to invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" run --plugin-data "${CLAUDE_PLUGIN_DATA}" ...`.
 - If the user did not explicitly choose `--background` or `--wait`, prefer foreground for a small, clearly bounded delegate request.
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep agy running for a long time, prefer background execution and ensure the bridge call uses `--background`.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, stop runs, summarize output, or do any follow-up work of your own.

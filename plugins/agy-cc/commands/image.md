@@ -33,7 +33,7 @@ Argument handling (security):
 Foreground flow (`--wait`):
 - Run with a Bash timeout of at least 10 minutes:
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" image '$ARGUMENTS'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" image --plugin-data "${CLAUDE_PLUGIN_DATA}" '$ARGUMENTS'
 ```
 - Return the command stdout verbatim.
 
@@ -41,7 +41,7 @@ Background flow (default):
 - Ensure the forwarded arguments include `--background`, then launch:
 ```typescript
 Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" image --background '$ARGUMENTS'`,
+  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-bridge.mjs" image --plugin-data "${CLAUDE_PLUGIN_DATA}" --background '$ARGUMENTS'`,
   description: "agy image",
   run_in_background: true
 })

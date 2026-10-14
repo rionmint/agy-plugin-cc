@@ -38,7 +38,7 @@ test("SessionStart repeated on resume and compaction writes each export once", (
 
   assert.deepEqual(lines(envFile), [
     "export AGY_CC_SESSION_ID='session-a'",
-    "export CLAUDE_PLUGIN_DATA='/plugin-data'"
+    "export AGY_CC_PLUGIN_DATA='/plugin-data'"
   ]);
 });
 
@@ -50,14 +50,14 @@ test("a value that changes and changes back still ends on the latest value", () 
   sessionStart(envFile, "session-a");
 
   assert.equal(lastExport(envFile, "AGY_CC_SESSION_ID"), "export AGY_CC_SESSION_ID='session-a'");
-  assert.equal(lines(envFile).filter((line) => line.startsWith("export CLAUDE_PLUGIN_DATA=")).length, 1);
+  assert.equal(lines(envFile).filter((line) => line.startsWith("export AGY_CC_PLUGIN_DATA=")).length, 1);
 });
 
 test("CRLF line endings are recognised as the same export", () => {
   const envFile = path.join(makeTempDir(), "sessionstart-hook-2.sh");
   fs.writeFileSync(
     envFile,
-    "export AGY_CC_SESSION_ID='session-a'\r\nexport CLAUDE_PLUGIN_DATA='/plugin-data'\r\n"
+    "export AGY_CC_SESSION_ID='session-a'\r\nexport AGY_CC_PLUGIN_DATA='/plugin-data'\r\n"
   );
 
   sessionStart(envFile, "session-a");
@@ -74,6 +74,6 @@ test("an existing file without a trailing newline does not get a joined line", (
   assert.deepEqual(lines(envFile), [
     "export OTHER='x'",
     "export AGY_CC_SESSION_ID='session-a'",
-    "export CLAUDE_PLUGIN_DATA='/plugin-data'"
+    "export AGY_CC_PLUGIN_DATA='/plugin-data'"
   ]);
 });

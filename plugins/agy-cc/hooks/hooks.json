@@ -1,5 +1,5 @@
 {
-  "description": "Session lifecycle hooks for the agy ↔ Claude Code bridge.",
+  "description": "Session lifecycle hooks for the agy <-> Claude Code bridge.",
   "hooks": {
     "SessionStart": [
       {

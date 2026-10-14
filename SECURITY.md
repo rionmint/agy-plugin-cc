@@ -104,14 +104,17 @@ calling them one would be a lie.
 ## Not defended
 
 - **Other processes running as you, inside the plugin's own directories.** The plugin data directory
-  (`CLAUDE_PLUGIN_DATA`, or `AGY_CC_HOME` for the agy homes) is inside the trust boundary. The checks
+  (`--plugin-data` / `AGY_CC_PLUGIN_DATA`, falling back to `CLAUDE_PLUGIN_DATA`; `AGY_CC_HOME` for the
+  agy homes) is inside the trust boundary. The checks
   on it (real directories, owned by you, not links, homes physically distinct) are made right before
   use, and Node has no directory-handle-relative file operations, so a process running as your user
   that swaps a directory there in the instant between a check and a write or delete (or that replaces
   a directory above the home root) is not stopped. Such a process can already do anything your user
   can. Against other *users* it does better: prompt files never go under a predictable shared temp
   path, and on POSIX an agy home or run directory owned by someone else is refused. Inside Claude Code
-  everything lives under `CLAUDE_PLUGIN_DATA`. Only when the bridge runs without it do run state and
+  everything lives under the plugin's own data directory, which every command passes explicitly
+  because the `CLAUDE_PLUGIN_DATA` a Bash call sees can be another plugin's (see the README,
+  Environment variables). Only when the bridge runs without one do run state and
   the agy homes fall back to fixed folders in the system temp directory (`agy-cc-runs`,
   `agy-cc-homes`); the homes there get the ownership check, the run-state folder is created
   owner-only but not checked.

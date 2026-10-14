@@ -5,6 +5,7 @@ import process from "node:process";
 
 import { readJsonFile } from "./fs.mjs";
 import { binaryAvailable, resolveExecutable, runCommand, spawnCli, terminateProcessTree } from "./process.mjs";
+import { resolvePluginDataDir } from "./state.mjs";
 
 export const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
@@ -16,7 +17,6 @@ const MAX_AGENT_OUTPUT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_BINARY = "agy";
 const BINARY_ENV = "AGY_BINARY";
 const HOME_ENV = "AGY_CC_HOME";
-const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 
 /**
  * agy has no prompt-file flag and ignores piped stdin, so the prompt has to be
@@ -107,9 +107,9 @@ export function resolveAgyHomeRoot(env = process.env) {
   if (override && String(override).trim()) {
     return path.resolve(String(override).trim());
   }
-  const pluginData = env?.[PLUGIN_DATA_ENV];
-  if (pluginData && String(pluginData).trim()) {
-    return path.join(String(pluginData).trim(), "agy-homes");
+  const pluginData = resolvePluginDataDir(env);
+  if (pluginData) {
+    return path.join(pluginData, "agy-homes");
   }
   return path.join(os.tmpdir(), "agy-cc-homes");
 }

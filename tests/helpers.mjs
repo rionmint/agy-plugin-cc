@@ -23,6 +23,12 @@ export function makeTempDir(prefix = "agy-cc-plugin-test-") {
   return dir;
 }
 
+// Run inside a Claude Code session, the shell hands the tests some plugin's
+// CLAUDE_PLUGIN_DATA (often another plugin's). Tests never write there: every
+// test file starts with a plugin data directory of its own.
+delete process.env.AGY_CC_PLUGIN_DATA;
+process.env.CLAUDE_PLUGIN_DATA = makeTempDir("agy-cc-plugin-data-");
+
 export function writeExecutable(filePath, source) {
   fs.writeFileSync(filePath, source, { encoding: "utf8", mode: 0o755 });
 }
