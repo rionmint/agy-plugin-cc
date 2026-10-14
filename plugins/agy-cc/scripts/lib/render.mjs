@@ -37,6 +37,44 @@ export function validateReviewResultShape(data) {
   if (!Array.isArray(data.next_steps)) {
     return "Missing array `next_steps`.";
   }
+  // The rest of `schemas/review-output.schema.json`: a review that passes here
+  // is one the renderer can show without inventing anything.
+  if (!["approve", "needs-attention"].includes(data.verdict.trim())) {
+    return "`verdict` must be `approve` or `needs-attention`.";
+  }
+  for (const [index, finding] of data.findings.entries()) {
+    const where = `findings[${index}]`;
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+      return `\`${where}\` must be an object.`;
+    }
+    if (!["critical", "high", "medium", "low"].includes(finding.severity)) {
+      return `\`${where}.severity\` must be critical, high, medium or low.`;
+    }
+    for (const key of ["title", "body", "file"]) {
+      if (typeof finding[key] !== "string" || !finding[key].trim()) {
+        return `\`${where}.${key}\` must be a non-empty string.`;
+      }
+    }
+    if (typeof finding.recommendation !== "string") {
+      return `\`${where}.recommendation\` must be a string.`;
+    }
+    for (const key of ["line_start", "line_end"]) {
+      if (!Number.isInteger(finding[key]) || finding[key] < 1) {
+        return `\`${where}.${key}\` must be a positive integer.`;
+      }
+    }
+    if (finding.line_end < finding.line_start) {
+      return `\`${where}.line_end\` is before \`line_start\`.`;
+    }
+    if (typeof finding.confidence !== "number" || !(finding.confidence >= 0 && finding.confidence <= 1)) {
+      return `\`${where}.confidence\` must be a number from 0 to 1.`;
+    }
+  }
+  for (const [index, step] of data.next_steps.entries()) {
+    if (typeof step !== "string" || !step.trim()) {
+      return `\`next_steps[${index}]\` must be a non-empty string.`;
+    }
+  }
   return null;
 }
 

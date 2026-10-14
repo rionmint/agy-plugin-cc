@@ -54,7 +54,7 @@ test("review runs with the read-only profile in the plugin's own agy home", () =
 
   assert.equal(result.status, 0, result.stderr);
   const entry = lastPrintRun(fakeAgyLog);
-  assert.equal(path.resolve(entry.home), path.resolve(path.join(pluginDataDir, "agy-home")));
+  assert.equal(path.resolve(entry.home), path.resolve(path.join(pluginDataDir, "agy-homes", "read-only")));
   for (const rule of ["write_file(*)", "command(*)", "unsandboxed(*)", "execute_url(*)", "mcp(*)"]) {
     assert.ok(deny(entry).includes(rule), rule);
   }

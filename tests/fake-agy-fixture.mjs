@@ -161,6 +161,9 @@ if (scenario === "not-logged-in") {
     } else if (scenario === "bad-shape" && schemaPath) {
       structured = {};
       response = "{}";
+    } else if (scenario === "bad-nested" && schemaPath) {
+      structured = { verdict: "banana", summary: "ok", findings: [null], next_steps: [42] };
+      response = JSON.stringify(structured);
     } else if (schemaPath || /critique|structured_output_contract/i.test(prompt)) {
       structured = { verdict: "approve", summary: "No material issues found in the reviewed changes.", findings: [], next_steps: ["Ship it."] };
       response = JSON.stringify({ ...structured, toolAction: "Finishing", toolSummary: "Done" });

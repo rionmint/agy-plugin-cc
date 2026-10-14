@@ -28,24 +28,29 @@ export const INLINE_PROMPT_MAX_CHARS = 12000;
 /** `--print-timeout` default. agy's own default (0) waits forever. */
 export const DEFAULT_PRINT_TIMEOUT = "3600s";
 
+/** How long agy may take to report `init` before the run is killed. */
+export const STARTUP_TIMEOUT_MS = 90000;
+
 /**
  * The permission mode every bridge run must start in. It is what the plugin's
- * own settings file asks for; anything else means the settings were not the
+ * own settings files ask for; anything else means the settings were not the
  * ones agy loaded, and the run is stopped.
  */
 export const EXPECTED_PERMISSION_MODE = "request-review";
 
 /**
- * agy's tool permissions live in a global settings file
+ * agy's tool permissions live in a settings file in its home directory
  * (`~/.gemini/antigravity-cli/settings.json`), and the CLI has no flag that
  * overrides them for one run. A user who picked `always-proceed` there would
  * turn every "read-only" review into a run that executes commands — `--mode
  * plan` included, which was measured running `run_command` under that setting.
  *
- * So the bridge never uses the user's agy home. It runs agy with its own home
- * directory and writes the permission profile below into that home before each
- * run. Credentials are not stored in the home directory on Windows, so the
- * signed-in account still applies.
+ * So the bridge never uses the user's agy home. Each profile below has a home
+ * directory of its own, and that home's settings file only ever holds that
+ * profile. Nothing is swapped in and out of a shared file, so concurrent runs
+ * cannot hand each other the wrong permissions and need no lock. Credentials are
+ * not stored in the home directory on Windows, so the signed-in account still
+ * applies.
  *
  * Rules matter as much as the base mode. In headless mode a tool that has to
  * *ask* is auto-denied and the whole turn ends with an empty answer, while a
@@ -58,16 +63,16 @@ export const EXPECTED_PERMISSION_MODE = "request-review";
  */
 export const PERMISSION_PROFILES = Object.freeze({
   "read-only": Object.freeze({
-    allow: ["read_url(*)"],
-    deny: ["write_file(*)", "command(*)", "unsandboxed(*)", "execute_url(*)", "mcp(*)"]
+    allow: Object.freeze(["read_url(*)"]),
+    deny: Object.freeze(["write_file(*)", "command(*)", "unsandboxed(*)", "execute_url(*)", "mcp(*)"])
   }),
   write: Object.freeze({
-    allow: ["read_url(*)"],
-    deny: ["command(*)", "unsandboxed(*)", "execute_url(*)", "mcp(*)"]
+    allow: Object.freeze(["read_url(*)"]),
+    deny: Object.freeze(["command(*)", "unsandboxed(*)", "execute_url(*)", "mcp(*)"])
   }),
   "write-commands": Object.freeze({
-    allow: ["read_url(*)", "command(*)"],
-    deny: ["execute_url(*)", "mcp(*)"]
+    allow: Object.freeze(["read_url(*)", "command(*)"]),
+    deny: Object.freeze(["execute_url(*)", "mcp(*)"])
   })
 });
 
@@ -81,6 +86,13 @@ export function resolvePermissionProfile({ write = false, allowCommands = false 
   return allowCommands ? "write-commands" : "write";
 }
 
+function assertProfile(profileName) {
+  if (!Object.prototype.hasOwnProperty.call(PERMISSION_PROFILES, profileName)) {
+    throw new Error(`Unknown permission profile: ${JSON.stringify(profileName)}`);
+  }
+  return profileName;
+}
+
 export function resolveAgyBinary(env = process.env) {
   const override = env?.[BINARY_ENV];
   if (override && String(override).trim()) {
@@ -89,17 +101,22 @@ export function resolveAgyBinary(env = process.env) {
   return DEFAULT_BINARY;
 }
 
-/** The home directory every bridge run hands to agy. */
-export function resolveAgyHome(env = process.env) {
+/** The directory that holds one agy home per permission profile. */
+export function resolveAgyHomeRoot(env = process.env) {
   const override = env?.[HOME_ENV];
   if (override && String(override).trim()) {
     return path.resolve(String(override).trim());
   }
   const pluginData = env?.[PLUGIN_DATA_ENV];
   if (pluginData && String(pluginData).trim()) {
-    return path.join(String(pluginData).trim(), "agy-home");
+    return path.join(String(pluginData).trim(), "agy-homes");
   }
-  return path.join(os.tmpdir(), "agy-cc-home");
+  return path.join(os.tmpdir(), "agy-cc-homes");
+}
+
+/** The agy home a run with this permission profile uses. */
+export function resolveAgyHome(profileName = "read-only", env = process.env) {
+  return path.join(resolveAgyHomeRoot(env), assertProfile(profileName));
 }
 
 export function resolveAgySettingsFile(home) {
@@ -150,10 +167,7 @@ export function readUserToolPermission(realHome = os.homedir()) {
 }
 
 export function buildAgySettings(profileName, options = {}) {
-  const profile = PERMISSION_PROFILES[profileName];
-  if (!profile) {
-    throw new Error(`Unknown permission profile: ${JSON.stringify(profileName)}`);
-  }
+  const profile = PERMISSION_PROFILES[assertProfile(profileName)];
   const settings = {
     toolPermission: EXPECTED_PERMISSION_MODE,
     allowNonWorkspaceAccess: false,
@@ -172,15 +186,100 @@ export function buildAgySettings(profileName, options = {}) {
   return settings;
 }
 
+// agy drops a key from its settings file when the value is the default, so a
+// file it has rewritten is compared with these filled back in.
+const SETTING_DEFAULTS = Object.freeze({
+  toolPermission: "request-review",
+  allowNonWorkspaceAccess: false,
+  useG1Credits: false,
+  showFeedbackSurvey: true,
+  showTips: true
+});
+
+function asRuleList(value) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value) || !value.every((rule) => typeof rule === "string")) {
+    return null;
+  }
+  return [...new Set(value)].sort();
+}
+
+function sameList(left, right) {
+  return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * The parts of a settings object that decide what a run may do, with agy's
+ * defaults filled in. Anything malformed comes back as null.
+ */
+function effectiveSettings(settings) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return null;
+  }
+  const permissions = settings.permissions ?? {};
+  if (typeof permissions !== "object" || Array.isArray(permissions) || permissions === null) {
+    return null;
+  }
+  const allow = asRuleList(permissions.allow);
+  const deny = asRuleList(permissions.deny);
+  const ask = asRuleList(permissions.ask);
+  if (!allow || !deny || !ask) {
+    return null;
+  }
+  const effective = { allow, deny, ask };
+  for (const [key, fallback] of Object.entries(SETTING_DEFAULTS)) {
+    const value = settings[key] ?? fallback;
+    if (typeof value !== typeof fallback) {
+      return null;
+    }
+    effective[key] = value;
+  }
+  effective.model = typeof settings.model === "string" ? settings.model : null;
+  return effective;
+}
+
+/**
+ * True when the settings file holds exactly this profile's permissions and the
+ * base mode the bridge expects. Never throws: an unreadable or malformed file
+ * is simply not a match.
+ */
+export function settingsMatchProfile(settingsFile, profileName) {
+  try {
+    const profile = PERMISSION_PROFILES[assertProfile(profileName)];
+    const effective = effectiveSettings(readJsonFile(settingsFile));
+    if (!effective) {
+      return false;
+    }
+    return (
+      effective.toolPermission === EXPECTED_PERMISSION_MODE &&
+      effective.allowNonWorkspaceAccess === false &&
+      sameList(effective.allow, asRuleList(profile.allow)) &&
+      sameList(effective.deny, asRuleList(profile.deny)) &&
+      effective.ask.length === 0
+    );
+  } catch {
+    return false;
+  }
+}
+
 function writeFileAtomic(filePath, content) {
   const dir = path.dirname(filePath);
-  const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
-  fs.writeFileSync(tempPath, content, { encoding: "utf8", mode: 0o600 });
+  const tempPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`);
+  fs.writeFileSync(tempPath, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
   fs.renameSync(tempPath, filePath);
 }
 
 /**
- * Make sure the plugin's agy home exists and carries the requested profile.
+ * Make sure a profile's agy home exists and its settings hold that profile.
+ *
+ * The file is only rewritten when it differs in substance. agy itself rewrites
+ * the file atomically, and leaves it alone once it is in its normalised form
+ * (both measured), so in the steady state nobody writes it at all; when the
+ * bridge does write, it writes atomically too. A reader can therefore never see
+ * a half-written file, and since every writer of this home writes the same
+ * profile, never another profile either.
  *
  * The home also gets a `.gitconfig` that includes the user's own, because agy
  * passes its home on to the commands it runs and git would otherwise lose the
@@ -191,13 +290,29 @@ export function prepareAgyHome(home, profileName, options = {}) {
   fs.mkdirSync(path.dirname(settingsFile), { recursive: true, mode: 0o700 });
   const realHome = options.realHome ?? os.homedir();
   const model = options.model === undefined ? readUserAgyModel(realHome) : options.model;
-  writeFileAtomic(settingsFile, `${JSON.stringify(buildAgySettings(profileName, { model }), null, 2)}\n`);
+  const desired = buildAgySettings(profileName, { model });
+
+  let current = null;
+  try {
+    current = effectiveSettings(readJsonFile(settingsFile));
+  } catch {
+    current = null;
+  }
+  const wanted = effectiveSettings(desired);
+  const same =
+    current &&
+    Object.keys(wanted).every((key) =>
+      Array.isArray(wanted[key]) ? sameList(current[key], wanted[key]) : current[key] === wanted[key]
+    );
+  if (!same) {
+    writeFileAtomic(settingsFile, `${JSON.stringify(desired, null, 2)}\n`);
+  }
 
   const gitconfig = path.join(home, ".gitconfig");
   const realGitconfig = path.join(realHome, ".gitconfig").replace(/\\/g, "/");
   if (path.resolve(realHome) !== path.resolve(home) && !fs.existsSync(gitconfig) && !/[\r\n"]/.test(realGitconfig)) {
     try {
-      fs.writeFileSync(gitconfig, `[include]\n\tpath = ${realGitconfig}\n`, { encoding: "utf8", mode: 0o600 });
+      fs.writeFileSync(gitconfig, `[include]\n\tpath = ${realGitconfig}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     } catch {
       // git still works without it, only without the user's identity
     }
@@ -205,180 +320,82 @@ export function prepareAgyHome(home, profileName, options = {}) {
   return settingsFile;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function conversationFiles(home, conversationId) {
+  const id = assertSafeCliValue("conversation", conversationId);
+  const base = path.join(home, ".gemini", "antigravity-cli");
+  return {
+    db: path.join(base, "conversations", `${id}.db`),
+    brain: path.join(base, "brain", id),
+    annotation: path.join(base, "annotations", `${id}.pbtxt`)
+  };
 }
 
-/** How long agy may take to report `init` before the run is killed. */
-export const STARTUP_TIMEOUT_MS = 90000;
-
-/**
- * A lock is only treated as abandoned when its holder is dead *and* it is
- * older than any start-up could take. The holder recorded in the lock is the
- * bridge, not agy: a bridge that died could leave an agy child that is still
- * starting, and that child must not be handed someone else's profile.
- */
-const STALE_LOCK_MIN_AGE_MS = STARTUP_TIMEOUT_MS + 60000;
-
-function readLockToken(lockPath) {
-  try {
-    return String(fs.readFileSync(lockPath, "utf8")).trim();
-  } catch {
-    return "";
+/** When a conversation database last changed, journal included; -1 when there is none. */
+function lastWriteMs(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return -1;
   }
-}
-
-function pidIsAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return true;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
-}
-
-/** The token of an abandoned lock, or null while the lock may still be in use. */
-function staleLockToken(lockPath, now = Date.now()) {
-  let stat;
-  try {
-    stat = fs.statSync(lockPath);
-  } catch {
-    return null;
-  }
-  const token = readLockToken(lockPath);
-  if (!token) {
-    return null;
-  }
-  const pid = Number.parseInt(token.split(":")[0], 10);
-  if (pidIsAlive(pid) || now - stat.mtimeMs < STALE_LOCK_MIN_AGE_MS) {
-    return null;
-  }
-  return token;
-}
-
-/**
- * Take an abandoned lock out of the way without ever deleting a live one.
- *
- * Two waiters can both decide the same lock is abandoned. Unlinking by name
- * would let the slower one delete the lock the faster one has just taken. The
- * lock is instead moved aside atomically, and only deleted if what was moved is
- * the abandoned token; anything else is put back.
- */
-function reclaimStaleLock(lockPath, staleToken) {
-  const aside = `${lockPath}.reclaim.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
-  try {
-    fs.renameSync(lockPath, aside);
-  } catch {
-    return;
-  }
-  if (readLockToken(aside) === staleToken) {
+  let newest = -1;
+  for (const candidate of [filePath, `${filePath}-wal`]) {
     try {
-      fs.unlinkSync(aside);
+      newest = Math.max(newest, fs.statSync(candidate).mtimeMs);
     } catch {
-      // disposable
+      // not there
     }
-    return;
   }
-  // We moved a live lock. Put it back; if a third run took the name in the
-  // meantime, the post-start settings check is what still catches a mix-up.
-  try {
-    fs.linkSync(aside, lockPath);
-  } catch {
-    // name taken again
-  }
-  try {
-    fs.unlinkSync(aside);
-  } catch {
-    // disposable
-  }
+  return newest;
 }
 
 /**
- * The settings file is shared by every bridge run, and agy only reads it at
- * start-up (measured: rewriting it after the `init` event did not change the
- * running process). A run therefore holds this lock from writing its profile
- * until agy reports `init`, so a concurrent run cannot swap the profile in
- * between. The lock is claimed with `link()` so it is never visible empty.
+ * Make the newest copy of a conversation available in `targetHome`.
+ *
+ * agy keeps a conversation in its home directory (`conversations/<id>.db`, the
+ * `brain/<id>` artifacts and `annotations/<id>.pbtxt`), and a copy of those in
+ * another home resumes there (measured). A read-only investigation continued
+ * with `--write` therefore moves its conversation into the write profile's home
+ * first. Returns the home the conversation was copied from, or null when the
+ * target already had the newest copy or none exists.
  */
-export async function acquireAgyHomeLock(home, options = {}) {
-  const lockPath = path.join(home, ".agy-cc-settings.lock");
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-  const token = `${process.pid}:${Math.random().toString(36).slice(2, 10)}`;
-  const deadline = Date.now() + (options.waitMs ?? 240000);
-
-  for (;;) {
-    const staging = `${lockPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
-    fs.writeFileSync(staging, token, { encoding: "utf8", mode: 0o600 });
-    try {
-      fs.linkSync(staging, lockPath);
-      return {
-        lockPath,
-        token,
-        release() {
-          try {
-            if (readLockToken(lockPath) === token) {
-              fs.unlinkSync(lockPath);
-            }
-          } catch {
-            // already gone
-          }
-        }
-      };
-    } catch (error) {
-      if (error?.code !== "EEXIST") {
-        throw error;
-      }
-    } finally {
-      try {
-        fs.unlinkSync(staging);
-      } catch {
-        // the staging copy is disposable
-      }
-    }
-
-    const stale = staleLockToken(lockPath);
-    if (stale) {
-      reclaimStaleLock(lockPath, stale);
+export function syncConversationInto(homeRoot, targetHome, conversationId) {
+  const target = conversationFiles(targetHome, conversationId);
+  let newestHome = null;
+  let newestMs = lastWriteMs(target.db);
+  for (const profileName of Object.keys(PERMISSION_PROFILES)) {
+    const home = path.join(homeRoot, profileName);
+    if (path.resolve(home) === path.resolve(targetHome)) {
       continue;
     }
-    if (Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for another agy run to start (lock ${lockPath}).`);
+    const written = lastWriteMs(conversationFiles(home, conversationId).db);
+    if (written > newestMs) {
+      newestMs = written;
+      newestHome = home;
     }
-    await sleep(100);
   }
-}
-
-function sameRules(left = [], right = []) {
-  const a = [...new Set(left)].sort();
-  const b = [...new Set(right)].sort();
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-/**
- * agy rewrites its settings file when it starts, from what it has just read.
- * Reading the file back right after `init` therefore shows the rules agy
- * loaded; if they are not this run's profile, something else wrote the file in
- * between and the run must not continue.
- */
-export function settingsMatchProfile(settingsFile, profileName) {
-  const profile = PERMISSION_PROFILES[profileName];
-  let settings;
-  try {
-    settings = readJsonFile(settingsFile);
-  } catch {
-    return false;
+  if (!newestHome) {
+    return null;
   }
-  const permissions = settings?.permissions ?? {};
-  const toolPermission = settings?.toolPermission ?? EXPECTED_PERMISSION_MODE;
-  return (
-    toolPermission === EXPECTED_PERMISSION_MODE &&
-    sameRules(permissions.allow, profile.allow) &&
-    sameRules(permissions.deny, profile.deny) &&
-    sameRules(permissions.ask ?? [], [])
-  );
+
+  const source = conversationFiles(newestHome, conversationId);
+  fs.mkdirSync(path.dirname(target.db), { recursive: true, mode: 0o700 });
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const from = `${source.db}${suffix}`;
+    const to = `${target.db}${suffix}`;
+    if (fs.existsSync(from)) {
+      fs.copyFileSync(from, to);
+    } else {
+      // A stale journal next to a newer database would corrupt it.
+      fs.rmSync(to, { force: true });
+    }
+  }
+  if (fs.existsSync(source.brain)) {
+    fs.mkdirSync(path.dirname(target.brain), { recursive: true, mode: 0o700 });
+    fs.cpSync(source.brain, target.brain, { recursive: true, force: true, dereference: false, verbatimSymlinks: true });
+  }
+  if (fs.existsSync(source.annotation)) {
+    fs.mkdirSync(path.dirname(target.annotation), { recursive: true, mode: 0o700 });
+    fs.copyFileSync(source.annotation, target.annotation);
+  }
+  return newestHome;
 }
 
 export function getAgyAvailability(cwd, options = {}) {
@@ -405,30 +422,21 @@ function buildAuthStatus(fields = {}) {
 /**
  * `agy models` needs a signed-in account and spends no model quota: signed out
  * it exits 1 with "Please sign in to view available models" (measured on
- * macOS, agy 1.3.5). It runs inside the plugin's agy home, so a pass also
- * shows that the account is visible from there.
- *
- * agy rewrites its settings file when it starts, so the probe takes the same
- * lock as a run and leaves the read-only profile in place.
+ * macOS, agy 1.3.5). It runs inside the read-only profile's home, so a pass
+ * also shows that the account is visible from the plugin's homes.
  */
 export async function runModelsProbe(cwd, options = {}) {
   const env = options.env ?? process.env;
   const binary = options.binary ?? resolveAgyBinary(env);
-  const home = options.home ?? resolveAgyHome(env);
+  const home = options.home ?? resolveAgyHome("read-only", env);
   const platform = options.platform ?? process.platform;
 
-  const lock = await acquireAgyHomeLock(home, { waitMs: options.lockWaitMs });
-  let result;
-  try {
-    prepareAgyHome(home, "read-only", { realHome: options.realHome, model: options.userModel });
-    result = runCommand(binary, ["models"], {
-      cwd,
-      env: agyChildEnv(env, home, platform),
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-  } finally {
-    lock.release();
-  }
+  prepareAgyHome(home, "read-only", { realHome: options.realHome, model: options.userModel });
+  const result = runCommand(binary, ["models"], {
+    cwd,
+    env: agyChildEnv(env, home, platform),
+    stdio: ["ignore", "pipe", "pipe"]
+  });
 
   if (result.error && /** @type {NodeJS.ErrnoException} */ (result.error).code === "ENOENT") {
     return buildAuthStatus({ available: false, detail: `${binary} binary not found`, source: "availability" });
@@ -509,7 +517,7 @@ const VALUE_PATTERNS = {
 export function assertSafeCliValue(kind, value) {
   const text = String(value ?? "");
   const pattern = VALUE_PATTERNS[kind];
-  if (!pattern || !pattern.test(text)) {
+  if (!pattern || !pattern.test(text) || text.includes("..")) {
     throw new Error(`Refusing to pass an unsafe ${kind} value to agy: ${JSON.stringify(value)}`);
   }
   return text;
@@ -546,7 +554,7 @@ export function assertSafePrompt(value) {
  * Differences from the other coding CLIs that matter here:
  * - there is no working-directory flag: the directory agy starts in is the workspace
  * - the prompt has to be on the command line (stdin is ignored)
- * - read-only is not a mode: it is the permission profile in the plugin's home
+ * - read-only is not a mode: it is the permission profile of the agy home
  * - structured output has a real flag, `--json-schema`, with the parsed object
  *   reported back as `structured_output`
  * - `--print-timeout` returns partial output with exit 0 when it fires
@@ -594,6 +602,25 @@ function isWindowsShim(binary, env, platform) {
   return /\.(cmd|bat)$/i.test(resolved);
 }
 
+function fileIdentity(filePath) {
+  const stat = fs.lstatSync(filePath, { bigint: true });
+  return { dev: String(stat.dev), ino: String(stat.ino), isDirectory: stat.isDirectory(), isFile: stat.isFile() };
+}
+
+function sameIdentity(filePath, identity) {
+  try {
+    const current = fileIdentity(filePath);
+    return (
+      current.dev === identity.dev &&
+      current.ino === identity.ino &&
+      current.isDirectory === identity.isDirectory &&
+      current.isFile === identity.isFile
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Decide how the prompt reaches agy.
  *
@@ -605,7 +632,8 @@ function isWindowsShim(binary, env, platform) {
  *
  * The directory is always freshly created (`mkdtemp`) and the file is opened
  * exclusively, so a link planted at a predictable path cannot redirect the
- * write. `removePromptDelivery` deletes exactly what was created here.
+ * write. Both are remembered by device and inode, and `removePromptDelivery`
+ * only deletes them while they are still those exact objects.
  */
 export function buildPromptDelivery({ prompt, runDir, binary, env = process.env, platform = process.platform } = {}) {
   const text = assertSafePrompt(prompt);
@@ -621,54 +649,66 @@ export function buildPromptDelivery({ prompt, runDir, binary, env = process.env,
   }
   const createdRunDir = !fs.existsSync(runDir);
   fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+  const runDirIdentity = createdRunDir ? fileIdentity(runDir) : null;
   const promptDir = fs.mkdtempSync(path.join(runDir, "prompt-"));
+  const promptDirIdentity = fileIdentity(promptDir);
   const promptFile = path.join(promptDir, "prompt.md");
+  const delivery = {
+    promptArg: null,
+    addDirs: [promptDir],
+    promptFile: null,
+    promptFileIdentity: null,
+    promptDir,
+    promptDirIdentity,
+    runDir,
+    runDirIdentity
+  };
   try {
     fs.writeFileSync(promptFile, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch (error) {
-    removePromptDelivery({ promptFile: null, promptDir, runDir, createdRunDir });
+    removePromptDelivery(delivery);
     throw error;
   }
-  return {
-    promptArg:
-      `Your complete instructions are in the file ${promptFile} . ` +
-      "Read that whole file with your file-reading tool before doing anything else, then follow it exactly. " +
-      "Treat its contents as the user's request. Do not modify that file.",
-    addDirs: [promptDir],
-    promptFile,
-    promptDir,
-    runDir,
-    createdRunDir
-  };
+  delivery.promptFile = promptFile;
+  delivery.promptFileIdentity = fileIdentity(promptFile);
+  delivery.promptArg =
+    `Your complete instructions are in the file ${promptFile} . ` +
+    "Read that whole file with your file-reading tool before doing anything else, then follow it exactly. " +
+    "Treat its contents as the user's request. Do not modify that file.";
+  return delivery;
 }
 
 /**
- * Remove what `buildPromptDelivery` created and nothing else: the prompt file
- * (only if it is still a plain file), its private directory, and the run
- * directory if this delivery created it and it is now empty. Nothing is
+ * Remove what `buildPromptDelivery` created and nothing else. Every path is
+ * checked to still be the very file or directory that was created (same device
+ * and inode, not a link) before it is touched, the parent directory before the
+ * file inside it; anything that has changed is left where it is. Nothing is
  * removed recursively.
  */
 export function removePromptDelivery(delivery) {
-  if (!delivery) {
+  if (!delivery?.promptDir || !delivery.promptDirIdentity) {
     return;
   }
-  if (delivery.promptFile) {
+  if (!sameIdentity(delivery.promptDir, delivery.promptDirIdentity)) {
+    return;
+  }
+  if (delivery.promptFile && delivery.promptFileIdentity && sameIdentity(delivery.promptFile, delivery.promptFileIdentity)) {
     try {
-      if (fs.lstatSync(delivery.promptFile).isFile()) {
-        fs.unlinkSync(delivery.promptFile);
-      }
+      fs.unlinkSync(delivery.promptFile);
     } catch {
       // already gone
     }
   }
-  for (const dir of [delivery.promptDir, delivery.createdRunDir ? delivery.runDir : null]) {
-    if (!dir) {
-      continue;
-    }
+  try {
+    fs.rmdirSync(delivery.promptDir);
+  } catch {
+    // not empty: leave it
+  }
+  if (delivery.runDirIdentity && sameIdentity(delivery.runDir, delivery.runDirIdentity)) {
     try {
-      fs.rmdirSync(dir);
+      fs.rmdirSync(delivery.runDir);
     } catch {
-      // not empty, or already gone: leave it
+      // still in use by another run, or not empty
     }
   }
 }
@@ -697,56 +737,47 @@ export async function runHeadlessAgent(cwd, options = {}) {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const binary = options.binary ?? resolveAgyBinary(env);
-  const home = options.agyHome ?? resolveAgyHome(env);
-  const profileName = options.permissionProfile ?? "read-only";
-  if (!PERMISSION_PROFILES[profileName]) {
-    throw new Error(`Unknown permission profile: ${JSON.stringify(profileName)}`);
-  }
+  const profileName = assertProfile(options.permissionProfile ?? "read-only");
+  const homeRoot = options.agyHomeRoot ?? resolveAgyHomeRoot(env);
+  const home = path.join(homeRoot, profileName);
 
   // A caller that does not supply a run directory gets prompt files under the
   // system temp directory; either way only what this run created is removed.
-  let delivery = null;
-  const removeOwnRunDir = () => removePromptDelivery(delivery);
+  const delivery = buildPromptDelivery({
+    prompt: options.prompt,
+    runDir: options.runDir ?? path.join(os.tmpdir(), "agy-cc-prompts"),
+    binary,
+    env,
+    platform
+  });
+
   let args;
-  let lock;
+  let migratedFrom = null;
   try {
-    delivery = buildPromptDelivery({
-      prompt: options.prompt,
-      runDir: options.runDir ?? path.join(os.tmpdir(), "agy-cc-prompts"),
-      binary,
-      env,
-      platform
-    });
     args = buildHeadlessArgs({
       ...options,
       promptArg: delivery.promptArg,
       addDirs: [...(options.addDirs ?? []), ...delivery.addDirs],
       outputFormat: "stream-json"
     });
-    lock = await acquireAgyHomeLock(home, { waitMs: options.lockWaitMs });
-  } catch (error) {
-    removeOwnRunDir();
-    throw error;
-  }
-
-  let released = false;
-  const releaseLock = () => {
-    if (!released) {
-      released = true;
-      lock.release();
-    }
-  };
-
-  try {
     prepareAgyHome(home, profileName, { realHome: options.realHome, model: options.userModel });
+    if (options.resumeConversationId) {
+      migratedFrom = syncConversationInto(homeRoot, home, options.resumeConversationId);
+      if (migratedFrom) {
+        emitProgress(
+          options.onProgress,
+          `Copied conversation ${options.resumeConversationId} from the ${path.basename(migratedFrom)} home into the ${profileName} home.`
+        );
+      }
+    }
   } catch (error) {
-    releaseLock();
-    removeOwnRunDir();
+    removePromptDelivery(delivery);
     throw error;
   }
 
   const detached = options.detached ?? platform !== "win32";
   const maxOutputBytes = options.maxOutputBytes ?? MAX_AGENT_OUTPUT_BYTES;
+  const settingsFile = resolveAgySettingsFile(home);
 
   return new Promise((resolve, reject) => {
     let child;
@@ -759,56 +790,27 @@ export async function runHeadlessAgent(cwd, options = {}) {
         windowsHide: true
       });
     } catch (error) {
-      releaseLock();
-      removeOwnRunDir();
+      removePromptDelivery(delivery);
       reject(error);
       return;
     }
 
-    // agy reads its settings once at start-up, so the lock only has to cover
-    // the window until `init`. A run that never gets there is killed, and the
-    // lock is released only once it has exited, so a late start-up can never
-    // read a profile meant for another run.
-    let startupTimedOut = false;
-    const startupTimer = setTimeout(() => {
-      if (!init) {
-        startupTimedOut = true;
-        stopChild();
-      }
-    }, options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS);
-
     const agentPid = child.pid ?? null;
-    emitProgress(options.onProgress, `Running agy (${binary}).`, "starting", {
-      threadId: options.resumeConversationId ?? null,
-      agentPid,
-      pid: agentPid
-    });
-
     let stdout = "";
     let stderr = "";
     let truncated = false;
     let lineBuffer = "";
     let init = null;
+    let startupValidated = false;
     let conversationId = null;
     let finalResult = null;
     let partialText = "";
     let permissionMismatch = null;
     let settingsMismatch = false;
+    let startupTimedOut = false;
+    let eventError = null;
     let authRequired = false;
     let killedByBridge = false;
-
-    const append = (current, chunk) => {
-      if (current.length >= maxOutputBytes) {
-        truncated = true;
-        return current;
-      }
-      const next = current + chunk;
-      if (next.length <= maxOutputBytes) {
-        return next;
-      }
-      truncated = true;
-      return next.slice(0, maxOutputBytes);
-    };
 
     // The whole tree goes: through a Windows `.cmd` shim the real process is a
     // grandchild that would otherwise keep our pipes open.
@@ -828,44 +830,75 @@ export async function runHeadlessAgent(cwd, options = {}) {
       }
     };
 
-    const handleEvent = (event) => {
-      if (event?.event === "init") {
-        if (init) {
-          return;
-        }
-        clearTimeout(startupTimer);
-        init = event.init ?? {};
-        conversationId = event.conversation_id ?? init.conversation_id ?? conversationId;
-        if (init.permission_mode !== EXPECTED_PERMISSION_MODE) {
-          // The profile this run was promised is not the one agy loaded.
-          permissionMismatch = String(init.permission_mode ?? "unknown");
-          stopChild();
-          return;
-        }
-        // Still under the lock: what agy wrote back is what it loaded.
-        if (!settingsMatchProfile(resolveAgySettingsFile(home), profileName)) {
-          settingsMismatch = true;
-          stopChild();
-          return;
-        }
-        releaseLock();
-        emitProgress(options.onProgress, `agy conversation ${conversationId} (model ${init.model ?? "default"}).`, "running", {
-          threadId: conversationId,
-          agentPid
-        });
+    const startupTimer = setTimeout(() => {
+      if (!startupValidated) {
+        startupTimedOut = true;
+        stopChild();
+      }
+    }, options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS);
+
+    emitProgress(options.onProgress, `Running agy (${binary}).`, "starting", {
+      threadId: options.resumeConversationId ?? null,
+      agentPid,
+      agentBinary: binary,
+      pid: agentPid
+    });
+
+    const append = (current, chunk) => {
+      if (current.length >= maxOutputBytes) {
+        truncated = true;
+        return current;
+      }
+      const next = current + chunk;
+      if (next.length <= maxOutputBytes) {
+        return next;
+      }
+      truncated = true;
+      return next.slice(0, maxOutputBytes);
+    };
+
+    const handleInit = (event) => {
+      if (init) {
         return;
       }
-      if (!init) {
-        // Nothing counts before agy has said how it started.
+      init = event.init && typeof event.init === "object" ? event.init : {};
+      conversationId = event.conversation_id ?? init.conversation_id ?? conversationId;
+      if (init.permission_mode !== EXPECTED_PERMISSION_MODE) {
+        // The profile this run was promised is not the one agy loaded.
+        permissionMismatch = String(init.permission_mode ?? "unknown");
+        stopChild();
+        return;
+      }
+      // agy rewrites the file from what it loaded; it must be this profile.
+      if (!settingsMatchProfile(settingsFile, profileName)) {
+        settingsMismatch = true;
+        stopChild();
+        return;
+      }
+      startupValidated = true;
+      clearTimeout(startupTimer);
+      emitProgress(options.onProgress, `agy conversation ${conversationId} (model ${init.model ?? "default"}).`, "running", {
+        threadId: conversationId,
+        agentPid
+      });
+    };
+
+    const handleEvent = (event) => {
+      if (event?.event === "init") {
+        handleInit(event);
+        return;
+      }
+      if (!startupValidated) {
+        // Nothing counts before agy has started with checked permissions.
         return;
       }
       if (event?.event === "result") {
-        finalResult = event.result ?? null;
+        finalResult = event.result && typeof event.result === "object" ? event.result : null;
         conversationId = finalResult?.conversation_id || conversationId;
         return;
       }
       const step = event?.step_update;
-      if (!step) {
+      if (!step || typeof step !== "object") {
         return;
       }
       if (typeof step.text_delta === "string" && step.step_type === "agent_response") {
@@ -878,6 +911,25 @@ export async function runHeadlessAgent(cwd, options = {}) {
       }
     };
 
+    const consumeLine = (line) => {
+      if (!line.startsWith("{")) {
+        return;
+      }
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      try {
+        handleEvent(event);
+      } catch (error) {
+        // A bug in handling must not leave a run half-validated: fail closed.
+        eventError = error instanceof Error ? error.message : String(error);
+        stopChild();
+      }
+    };
+
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -887,13 +939,7 @@ export async function runHeadlessAgent(cwd, options = {}) {
       while (newline !== -1) {
         const line = lineBuffer.slice(0, newline).trim();
         lineBuffer = lineBuffer.slice(newline + 1);
-        if (line.startsWith("{")) {
-          try {
-            handleEvent(JSON.parse(line));
-          } catch {
-            // not an event line
-          }
-        }
+        consumeLine(line);
         newline = lineBuffer.indexOf("\n");
       }
       if (lineBuffer.length > maxOutputBytes) {
@@ -912,23 +958,14 @@ export async function runHeadlessAgent(cwd, options = {}) {
 
     child.on("error", (error) => {
       clearTimeout(startupTimer);
-      releaseLock();
-      removeOwnRunDir();
+      removePromptDelivery(delivery);
       reject(error);
     });
 
     child.on("close", (code, signal) => {
       clearTimeout(startupTimer);
-      releaseLock();
-      removeOwnRunDir();
-      const tail = lineBuffer.trim();
-      if (tail.startsWith("{")) {
-        try {
-          handleEvent(JSON.parse(tail));
-        } catch {
-          // incomplete last line
-        }
-      }
+      removePromptDelivery(delivery);
+      consumeLine(lineBuffer.trim());
 
       const status = code ?? (signal ? 1 : 0);
       const response = typeof finalResult?.response === "string" ? finalResult.response : partialText;
@@ -942,17 +979,23 @@ export async function runHeadlessAgent(cwd, options = {}) {
         threadId: conversationId,
         agentPid,
         init,
+        startupValidated,
         result: finalResult,
         finalMessage: String(response ?? "").trimEnd(),
-        structuredOutput: finalResult?.structured_output ?? null,
+        structuredOutput:
+          finalResult?.structured_output && typeof finalResult.structured_output === "object"
+            ? finalResult.structured_output
+            : null,
         deniedActions: Array.isArray(finalResult?.denied_actions) ? finalResult.denied_actions : [],
         timedOut: /print timeout after/i.test(stderr),
         authRequired,
         permissionMismatch,
         settingsMismatch,
         startupTimedOut,
+        eventError,
         killedByBridge,
         resumeConversationId: options.resumeConversationId ?? null,
+        migratedFrom,
         printTimeout: options.printTimeout || DEFAULT_PRINT_TIMEOUT,
         args,
         binary,
@@ -995,15 +1038,19 @@ export function judgeAgyRun(run, options = {}) {
   }
   if (run.settingsMismatch) {
     failures.push(
-      "The permission rules agy loaded were not this run's profile (another run changed the plugin's agy settings while this one started). The run was stopped; run it again."
+      "The permission rules in the plugin's agy home were not this run's profile when agy started, so the run was stopped. Check that nothing else edits that settings file."
     );
+    return failures;
+  }
+  if (run.eventError) {
+    failures.push(`The bridge could not process agy's output (${run.eventError}); the run was stopped.`);
     return failures;
   }
   if (run.startupTimedOut) {
     failures.push("agy did not start within 90 seconds and was stopped.");
     return failures;
   }
-  if (!run.init) {
+  if (!run.init || !run.startupValidated) {
     failures.push("agy never reported its start-up event, so the run's permissions could not be checked.");
   }
   if (run.resumeConversationId) {
@@ -1012,7 +1059,7 @@ export function judgeAgyRun(run, options = {}) {
     );
     if (missing || (run.conversationId && run.conversationId !== run.resumeConversationId)) {
       failures.push(
-        `agy could not find conversation ${run.resumeConversationId} in the plugin's agy home and started a new one instead. Start a fresh run.`
+        `agy could not find conversation ${run.resumeConversationId} in the plugin's agy homes and started a new one instead. Start a fresh run.`
       );
     }
   }
@@ -1049,10 +1096,10 @@ function escapeRegExp(text) {
  * timeout must stay failures rather than be papered over by a second turn.
  */
 function isRecoverable(run) {
-  if (!run.init || !run.conversationId || run.status !== 0 || run.result?.status !== "SUCCESS") {
+  if (!run.startupValidated || !run.conversationId || run.status !== 0 || run.result?.status !== "SUCCESS") {
     return false;
   }
-  if (run.authRequired || run.permissionMismatch || run.settingsMismatch || run.startupTimedOut || run.timedOut) {
+  if (run.authRequired || run.permissionMismatch || run.settingsMismatch || run.startupTimedOut || run.timedOut || run.eventError) {
     return false;
   }
   if (run.resumeConversationId && run.conversationId !== run.resumeConversationId) {
@@ -1178,10 +1225,9 @@ export function buildReviewPrompt({ targetLabel, focusText, collectionGuidance, 
 
 export const IMAGE_FILE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 
-/** Where agy keeps a conversation's artifacts inside the plugin's home. */
+/** Where agy keeps a conversation's artifacts inside an agy home. */
 export function resolveConversationDir(home, conversationId) {
-  const id = assertSafeCliValue("conversation", conversationId);
-  return path.join(home, ".gemini", "antigravity-cli", "brain", id);
+  return conversationFiles(home, conversationId).brain;
 }
 
 /** Image files a conversation produced, newest first. */

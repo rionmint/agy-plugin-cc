@@ -40,7 +40,7 @@ test("check reports ready when fake agy is installed and signed in", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ready, true);
   assert.equal(payload.agy.available, true);
-  assert.match(payload.agyHome, /agy-home$/);
+  assert.match(payload.agyHome, /agy-homes$/);
   assert.equal(payload.auth.loggedIn, true);
   assert.equal(payload.sessionRuntime.mode, "plugin-owned");
   assert.equal(payload.reviewGateEnabled, undefined);
@@ -670,4 +670,24 @@ test("a critique whose structured output has the wrong shape fails", () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stdout, /unexpected review shape/);
+});
+
+test("a critique with a malformed finding or verdict is a failure", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "bad-nested");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
+  run("git", ["add", "a.txt"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "a.txt"), "b\n");
+
+  const result = run("node", [SCRIPT, "critique"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /verdict` must be|findings\[0\]/);
 });

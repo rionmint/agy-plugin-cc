@@ -10,9 +10,9 @@ What is new for agy:
 
 - **Plugin-owned agy home with permission profiles.** agy has no per-run permission flag and reads a
   global `toolPermission`; with `always-proceed` there a headless run executes commands even under
-  `--mode plan` (measured). Every bridge run therefore starts agy with its own home and a
-  `read-only`, `write` or `write-commands` profile written under a lock, and is stopped if agy does not
-  start in `request-review`.
+  `--mode plan` (measured). Every bridge run therefore starts agy with a plugin-owned home — one per
+  `read-only`, `write` and `write-commands` profile, each holding only its own settings — and is stopped
+  if agy does not start in `request-review` with that home's rules.
 - **Deny rules instead of asks.** A tool that has to ask ends a headless turn with an empty answer; a
   tool refused by rule lets the turn continue. All state-changing tools are denied by rule.
 - **agy's false successes are failures.** Refused permissions, `--print-timeout`, empty answers and an
@@ -27,18 +27,21 @@ What is new for agy:
 - A sign-in that headless agy cannot complete is detected and the run stopped at once instead of
   waiting for agy's own one-minute login timeout.
 
-Hardened after an adversarial review (Codex) before release:
+Hardened after two rounds of adversarial review (Codex) before release:
 
-- At `init` the bridge also reads back the settings file agy rewrote from what it loaded and stops
-  the run unless it holds exactly this run's rules; a run that never sends `init` fails closed.
-- A start-up that takes over 90 seconds is killed before the settings lock is released; an abandoned
-  lock is reclaimed only when its holder is dead and it is over 150 seconds old, by an atomic
-  move-aside that puts a live lock back.
+- The first version shared one agy home and swapped profiles in its settings file under a lock. The
+  review showed lock recovery could still let two runs overlap, and an orphaned agy could read the
+  wrong profile. Profiles now each have their own home, so nothing is ever swapped and there is no
+  lock; a conversation continued under another profile is copied into that home.
+- At `init` the bridge checks the home's settings hold exactly this run's rules (malformed settings
+  never match), a run that never passes the start-up checks within 90 seconds is killed, and nothing
+  agy printed before the checks counts.
 - Prompt files go into a fresh `mkdtemp` directory, are opened exclusively, and cleanup removes only
-  what was created, never recursively.
+  what was created, checked by device and inode, never recursively.
 - A batch-file path that `cmd` would rewrite (`%`, `!`, `^`, quotes) is refused.
 - The automatic follow-up turn only runs when a refused permission is the sole problem, so a lost
   conversation stays a failure.
-- An image saved from a failed run, and a critique whose structured output has the wrong shape, are
-  reported as failures.
-- `stop` also recognises the `agy.cmd` shim and a binary set through `AGY_BINARY`.
+- An image saved from a failed run, and a critique whose structured output does not match the full
+  review schema, are reported as failures.
+- `stop` recognises the `agy.cmd` shim and the binary a run was actually started with (recorded in the
+  job), matched as a whole path component.

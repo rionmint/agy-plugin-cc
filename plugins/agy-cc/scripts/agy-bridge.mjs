@@ -20,7 +20,9 @@ import {
   listConversationImages,
   parseStructuredOutput,
   readUserToolPermission,
+  resolveAgyBinary,
   resolveAgyHome,
+  resolveAgyHomeRoot,
   resolvePermissionProfile,
   runAgyWithRecovery
 } from "./lib/agy.mjs";
@@ -263,7 +265,7 @@ async function buildCheckReport(cwd, actionsTaken = []) {
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const agyStatus = getAgyAvailability(cwd);
   const authStatus = await getAgyAuthStatus(cwd);
-  const agyHome = resolveAgyHome();
+  const agyHome = resolveAgyHomeRoot();
   const userToolPermission = readUserToolPermission();
 
   const nextSteps = [];
@@ -674,7 +676,7 @@ async function executeImageRun(request) {
     aspectRatio: request.aspect,
     referencePaths: references
   });
-  const home = resolveAgyHome();
+  const home = resolveAgyHome("read-only");
   const startedAt = Date.now();
 
   const runId = ensureRunId(request, "image");
@@ -688,7 +690,6 @@ async function executeImageRun(request) {
     addDirs,
     printTimeout: request.timeout ?? DEFAULT_IMAGE_TIMEOUT,
     requireResponse: false,
-    agyHome: home,
     onProgress: request.onProgress
   });
 
@@ -1244,7 +1245,7 @@ function handleTaskResumeCandidate(argv) {
 
 function terminateJobProcessTrees(job) {
   const targets = resolveJobKillTargets(job);
-  const markers = buildProcessMarkers();
+  const markers = buildProcessMarkers([job.agentBinary, resolveAgyBinary()]);
   const results = [];
   for (const pid of targets) {
     results.push({ pid, ...terminateProcessTree(pid, { expect: markers }) });

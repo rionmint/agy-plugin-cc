@@ -31,11 +31,12 @@ import {
   removePromptDelivery,
   resolveAgyBinary,
   resolveAgyHome,
+  resolveAgyHomeRoot,
+  syncConversationInto,
   resolvePermissionProfile,
   runAgyWithRecovery,
   runHeadlessAgent,
-  settingsMatchProfile,
-  acquireAgyHomeLock
+  settingsMatchProfile
 } from "../plugins/agy-cc/scripts/lib/agy.mjs";
 import { buildCmdLine, runCommand } from "../plugins/agy-cc/scripts/lib/process.mjs";
 import { buildProcessMarkers, OUR_PROCESS_MARKERS } from "../plugins/agy-cc/scripts/lib/tracked-jobs.mjs";
@@ -56,10 +57,14 @@ test("resolveAgyBinary prefers AGY_BINARY", () => {
   assert.equal(resolveAgyBinary({}), "agy");
 });
 
-test("resolveAgyHome uses AGY_CC_HOME, then the plugin data directory", () => {
-  assert.equal(resolveAgyHome({ AGY_CC_HOME: "/x/home" }), path.resolve("/x/home"));
-  assert.equal(resolveAgyHome({ CLAUDE_PLUGIN_DATA: "/data" }), path.join("/data", "agy-home"));
-  assert.match(resolveAgyHome({}), /agy-cc-home$/);
+test("each permission profile has its own agy home under one root", () => {
+  assert.equal(resolveAgyHomeRoot({ AGY_CC_HOME: "/x/home" }), path.resolve("/x/home"));
+  assert.equal(resolveAgyHomeRoot({ CLAUDE_PLUGIN_DATA: "/data" }), path.join("/data", "agy-homes"));
+  assert.match(resolveAgyHomeRoot({}), /agy-cc-homes$/);
+  const env = { CLAUDE_PLUGIN_DATA: "/data" };
+  assert.equal(resolveAgyHome("read-only", env), path.join("/data", "agy-homes", "read-only"));
+  assert.equal(resolveAgyHome("write-commands", env), path.join("/data", "agy-homes", "write-commands"));
+  assert.throws(() => resolveAgyHome("../../etc", env), /Unknown permission profile/);
 });
 
 test("agyChildEnv swaps USERPROFILE on Windows and leaves HOME alone", () => {
@@ -202,6 +207,7 @@ test("judgeAgyRun treats agy's misleading successes as failures", () => {
   const ok = {
     status: 0,
     init: { permission_mode: "request-review" },
+    startupValidated: true,
     result: { status: "SUCCESS", response: "fine" },
     finalMessage: "fine",
     deniedActions: [],
@@ -209,7 +215,7 @@ test("judgeAgyRun treats agy's misleading successes as failures", () => {
   };
   assert.deepEqual(judgeAgyRun(ok), []);
 
-  const noInit = { ...ok, init: null };
+  const noInit = { ...ok, init: null, startupValidated: false };
   assert.ok(judgeAgyRun(noInit).some((reason) => /never reported its start-up event/.test(reason)));
   assert.ok(judgeAgyRun({ ...ok, settingsMismatch: true }).some((reason) => /not this run's profile/.test(reason)));
   assert.ok(judgeAgyRun({ ...ok, startupTimedOut: true }).some((reason) => /did not start within 90 seconds/.test(reason)));
@@ -307,7 +313,7 @@ test("runHeadlessAgent runs agy in the plugin home with the requested profile", 
   const run = await runHeadlessAgent(cwd, {
     prompt: "check the thing",
     env,
-    agyHome: home,
+    agyHomeRoot: home,
     realHome,
     permissionProfile: "read-only",
     onProgress: (event) => progress.push(event)
@@ -320,7 +326,7 @@ test("runHeadlessAgent runs agy in the plugin home with the requested profile", 
   assert.equal(run.init.permission_mode, "request-review");
 
   const entry = lastPrintRun(log);
-  assert.equal(path.resolve(entry.home), path.resolve(home), "agy saw the plugin home");
+  assert.equal(path.resolve(entry.home), path.resolve(path.join(home, "read-only")), "agy saw the read-only profile home");
   assert.ok(entry.settings.permissions.deny.includes("write_file(*)"));
   assert.equal(path.resolve(entry.cwd), path.resolve(cwd));
   assert.equal(typeof run.agentPid, "number");
@@ -329,7 +335,7 @@ test("runHeadlessAgent runs agy in the plugin home with the requested profile", 
 
 test("runHeadlessAgent hands the write profile over when asked", async () => {
   const { cwd, env, home, realHome, log } = fakeSetup();
-  await runHeadlessAgent(cwd, { prompt: "edit it", env, agyHome: home, realHome, permissionProfile: "write" });
+  await runHeadlessAgent(cwd, { prompt: "edit it", env, agyHomeRoot: home, realHome, permissionProfile: "write" });
   const entry = lastPrintRun(log);
   assert.ok(!entry.settings.permissions.deny.includes("write_file(*)"));
   assert.ok(entry.settings.permissions.deny.includes("command(*)"));
@@ -338,7 +344,7 @@ test("runHeadlessAgent hands the write profile over when asked", async () => {
 test("a run that starts in the wrong permission mode is stopped and failed", async () => {
   const { cwd, env, home, realHome } = fakeSetup("always-proceed", { FAKE_AGY_DELAY_MS: "15000" });
   const started = Date.now();
-  const run = await runHeadlessAgent(cwd, { prompt: "review", env, agyHome: home, realHome });
+  const run = await runHeadlessAgent(cwd, { prompt: "review", env, agyHomeRoot: home, realHome });
   assert.ok(Date.now() - started < 10000, "the run was killed at init, not left to finish");
   assert.ok(run.failures.some((reason) => /permission mode "always-proceed"/.test(reason)));
 });
@@ -346,14 +352,14 @@ test("a run that starts in the wrong permission mode is stopped and failed", asy
 test("a signed-out run is killed as soon as agy asks for a browser login", async () => {
   const { cwd, env, home, realHome } = fakeSetup("not-logged-in");
   const started = Date.now();
-  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHome: home, realHome });
+  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHomeRoot: home, realHome });
   assert.ok(Date.now() - started < 10000, "did not wait for agy's own login timeout");
   assert.ok(run.failures.some((reason) => /not signed in/.test(reason)));
 });
 
 test("a print timeout is reported as a failure despite exit 0 and SUCCESS", async () => {
   const { cwd, env, home, realHome } = fakeSetup("timeout");
-  const run = await runHeadlessAgent(cwd, { prompt: "count", env, agyHome: home, realHome, printTimeout: "5s" });
+  const run = await runHeadlessAgent(cwd, { prompt: "count", env, agyHomeRoot: home, realHome, printTimeout: "5s" });
   assert.equal(run.status, 0);
   assert.equal(run.result.status, "SUCCESS");
   assert.ok(run.failures.some((reason) => /--print-timeout \(5s\)/.test(reason)));
@@ -364,7 +370,7 @@ test("resuming an unknown conversation is reported instead of silently starting 
   const run = await runHeadlessAgent(cwd, {
     prompt: "continue",
     env,
-    agyHome: home,
+    agyHomeRoot: home,
     realHome,
     resumeConversationId: "abcdef12-0000-4000-8000-000000000000"
   });
@@ -373,7 +379,7 @@ test("resuming an unknown conversation is reported instead of silently starting 
 
 test("a refused permission is recovered by continuing the same conversation once", async () => {
   const { cwd, env, home, realHome, log } = fakeSetup("denied-once");
-  const run = await runAgyWithRecovery(cwd, { prompt: "review this", env, agyHome: home, realHome });
+  const run = await runAgyWithRecovery(cwd, { prompt: "review this", env, agyHomeRoot: home, realHome });
   assert.deepEqual(run.failures, []);
   assert.equal(run.attempts, 2);
   assert.match(run.finalMessage, /Recovered without the refused permission/);
@@ -387,7 +393,7 @@ test("a refused permission is recovered by continuing the same conversation once
 
 test("recovery is not attempted for a timeout", async () => {
   const { cwd, env, home, realHome, log } = fakeSetup("timeout");
-  const run = await runAgyWithRecovery(cwd, { prompt: "count", env, agyHome: home, realHome });
+  const run = await runAgyWithRecovery(cwd, { prompt: "count", env, agyHomeRoot: home, realHome });
   assert.equal(run.attempts, 1);
   assert.equal(readFakeAgyLog(log).filter((entry) => entry.argv.some((token) => token.startsWith("-p="))).length, 1);
 });
@@ -396,7 +402,7 @@ test("long prompts reach the fake agy through the prompt file", async () => {
   const { cwd, env, home, realHome, log } = fakeSetup();
   const runDir = path.join(makeTempDir(), "run-x");
   const prompt = `code review ${"y".repeat(INLINE_PROMPT_MAX_CHARS)}`;
-  const run = await runHeadlessAgent(cwd, { prompt, env, agyHome: home, realHome, runDir });
+  const run = await runHeadlessAgent(cwd, { prompt, env, agyHomeRoot: home, realHome, runDir });
   assert.deepEqual(run.failures, []);
   const entry = lastPrintRun(log);
   assert.equal(entry.prompt, prompt);
@@ -406,22 +412,23 @@ test("long prompts reach the fake agy through the prompt file", async () => {
 test("listConversationImages finds what an image run drew", async () => {
   const { cwd, env, home, realHome } = fakeSetup("image");
   const started = Date.now();
-  const run = await runHeadlessAgent(cwd, { prompt: "draw", env, agyHome: home, realHome, requireResponse: false });
-  const images = listConversationImages(home, run.conversationId, { sinceMs: started - 5000 });
+  const run = await runHeadlessAgent(cwd, { prompt: "draw", env, agyHomeRoot: home, realHome, requireResponse: false });
+  const images = listConversationImages(path.join(home, "read-only"), run.conversationId, { sinceMs: started - 5000 });
   assert.equal(images.length, 1);
   assert.equal(detectImageType(fs.readFileSync(images[0].path)).type, "jpeg");
 });
 
-test("concurrent runs each get the profile they asked for", async () => {
+test("concurrent runs each get the profile they asked for, from their own home", async () => {
   const { cwd, env, home, realHome, log } = fakeSetup("default", { FAKE_AGY_DELAY_MS: "300" });
   await Promise.all([
-    runHeadlessAgent(cwd, { prompt: "read only please", env, agyHome: home, realHome, permissionProfile: "read-only" }),
-    runHeadlessAgent(cwd, { prompt: "write please", env, agyHome: home, realHome, permissionProfile: "write" }),
-    runHeadlessAgent(cwd, { prompt: "read only again", env, agyHome: home, realHome, permissionProfile: "read-only" })
+    runHeadlessAgent(cwd, { prompt: "read only please", env, agyHomeRoot: home, realHome, permissionProfile: "read-only" }),
+    runHeadlessAgent(cwd, { prompt: "write please", env, agyHomeRoot: home, realHome, permissionProfile: "write" }),
+    runHeadlessAgent(cwd, { prompt: "read only again", env, agyHomeRoot: home, realHome, permissionProfile: "read-only" })
   ]);
   for (const entry of readFakeAgyLog(log).filter((item) => item.argv.some((token) => token.startsWith("-p=")))) {
     const wantsWrite = /write please/.test(entry.prompt);
     assert.equal(entry.settings.permissions.deny.includes("write_file(*)"), !wantsWrite, entry.prompt);
+    assert.equal(path.basename(entry.home), wantsWrite ? "write" : "read-only", entry.prompt);
   }
 });
 
@@ -454,7 +461,7 @@ test("live agy --help advertises the headless flags this bridge uses", () => {
 test("a profile swapped in while agy starts is caught right after init", async () => {
   const { cwd, env, home, realHome } = fakeSetup("foreign-settings", { FAKE_AGY_DELAY_MS: "15000" });
   const started = Date.now();
-  const run = await runHeadlessAgent(cwd, { prompt: "review", env, agyHome: home, realHome, permissionProfile: "read-only" });
+  const run = await runHeadlessAgent(cwd, { prompt: "review", env, agyHomeRoot: home, realHome, permissionProfile: "read-only" });
   assert.ok(Date.now() - started < 10000, "the run was stopped at init");
   assert.equal(run.settingsMismatch, true);
   assert.ok(run.failures.some((reason) => /not this run's profile/.test(reason)));
@@ -473,39 +480,18 @@ test("settingsMatchProfile accepts agy's normalised rewrite of the profile", () 
   assert.equal(settingsMatchProfile(file, "write"), false);
 });
 
-test("a run that never reports init is killed, failed, and gives the lock back", async () => {
+test("a run that never reports init is killed and failed", async () => {
   const { cwd, env, home, realHome } = fakeSetup("no-init");
-  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHome: home, realHome, startupTimeoutMs: 1500 });
+  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHomeRoot: home, realHome, startupTimeoutMs: 1500 });
   assert.equal(run.startupTimedOut, true);
   assert.ok(run.failures.some((reason) => /did not start/.test(reason)));
-  assert.equal(fs.existsSync(path.join(home, ".agy-cc-settings.lock")), false);
 });
 
 test("a result without an init event is not accepted", async () => {
   const { cwd, env, home, realHome } = fakeSetup("result-without-init");
-  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHome: home, realHome });
+  const run = await runHeadlessAgent(cwd, { prompt: "hi", env, agyHomeRoot: home, realHome });
   assert.equal(run.result, null, "events before init are ignored");
   assert.ok(run.failures.some((reason) => /never reported its start-up event/.test(reason)));
-});
-
-test("an abandoned lock is reclaimed only once it is old and its holder is dead", async () => {
-  const home = makeTempDir();
-  const lockPath = path.join(home, ".agy-cc-settings.lock");
-
-  fs.writeFileSync(lockPath, "2147483:dead");
-  await assert.rejects(acquireAgyHomeLock(home, { waitMs: 400 }), /Timed out waiting/, "a fresh lock is respected");
-
-  const old = new Date(Date.now() - 10 * 60 * 1000);
-  fs.utimesSync(lockPath, old, old);
-  const lock = await acquireAgyHomeLock(home, { waitMs: 2000 });
-  assert.match(fs.readFileSync(lockPath, "utf8"), new RegExp(`^${process.pid}:`));
-  lock.release();
-  assert.equal(fs.existsSync(lockPath), false);
-
-  fs.writeFileSync(lockPath, `${process.pid}:alive`);
-  fs.utimesSync(lockPath, old, old);
-  await assert.rejects(acquireAgyHomeLock(home, { waitMs: 400 }), /Timed out waiting/, "a live holder keeps its lock however old");
-  assert.equal(fs.readFileSync(lockPath, "utf8"), `${process.pid}:alive`);
 });
 
 test("a planted file in the run directory is neither overwritten nor removed", () => {
@@ -532,7 +518,7 @@ test("a lost conversation is not rescued by the automatic follow-up turn", async
   const run = await runAgyWithRecovery(cwd, {
     prompt: "continue",
     env,
-    agyHome: home,
+    agyHomeRoot: home,
     realHome,
     resumeConversationId: "abcdef12-0000-4000-8000-000000000000"
   });
@@ -547,8 +533,121 @@ test("a batch file path that cmd would rewrite is refused", () => {
   assert.match(buildCmdLine(String.raw`C:\Program Files\agy\agy.cmd`, ["x"]), /"C:\\Program Files\\agy\\agy\.cmd"/);
 });
 
-test("the process markers also accept a binary configured through AGY_BINARY", () => {
-  assert.equal(buildProcessMarkers({}), OUR_PROCESS_MARKERS);
-  assert.equal(buildProcessMarkers({ AGY_BINARY: "C:\\bin\\agy.exe" }), OUR_PROCESS_MARKERS);
-  assert.ok(buildProcessMarkers({ AGY_BINARY: "/opt/google/antigravity-cli" }).includes("antigravity-cli"));
+test("the process markers match the recorded binary as a whole token only", () => {
+  assert.deepEqual(buildProcessMarkers([]), [...OUR_PROCESS_MARKERS]);
+  assert.deepEqual(buildProcessMarkers(["C:\\bin\\agy.exe", null]), [...OUR_PROCESS_MARKERS]);
+  const markers = buildProcessMarkers(["/opt/ag", "C:\\tools\\antigravity-cli.exe"]);
+  const matches = (line) => markers.some((marker) => (marker instanceof RegExp ? marker.test(line) : line.includes(marker)));
+  assert.equal(matches("/opt/ag -p=x --output-format stream-json"), true, "a short name still counts");
+  assert.equal(matches('"C:\\tools\\antigravity-cli.exe" -p=x'), true);
+  assert.equal(matches("C:\\tools\\ANTIGRAVITY-CLI.cmd -p=x"), true, "case and shim extension");
+  assert.equal(matches("/usr/bin/antigravity-cli-backup --run"), false, "not as part of a longer name");
+  assert.equal(matches("/usr/bin/bag x"), false);
+});
+
+test("settingsMatchProfile never throws and rejects malformed rule lists", () => {
+  const home = makeTempDir();
+  const file = prepareAgyHome(home, "read-only", { realHome: makeTempDir(), model: null });
+  for (const broken of [
+    { permissions: { allow: null, deny: [...PERMISSION_PROFILES["read-only"].deny] } },
+    { permissions: { allow: "read_url(*)", deny: [] } },
+    { permissions: { allow: [1], deny: [] } },
+    { permissions: [] },
+    { toolPermission: 7, permissions: { allow: ["read_url(*)"], deny: [...PERMISSION_PROFILES["read-only"].deny] } },
+    []
+  ]) {
+    fs.writeFileSync(file, JSON.stringify(broken));
+    assert.equal(settingsMatchProfile(file, "read-only"), false, JSON.stringify(broken));
+  }
+  fs.writeFileSync(file, "{not json");
+  assert.equal(settingsMatchProfile(file, "read-only"), false);
+  assert.equal(settingsMatchProfile(path.join(home, "missing.json"), "read-only"), false);
+});
+
+test("prepareAgyHome leaves an equivalent normalised file alone", () => {
+  const home = makeTempDir();
+  const file = prepareAgyHome(home, "write", { realHome: makeTempDir(), model: "M" });
+  // What agy writes back: defaults dropped, empty ask dropped.
+  const normalised = { model: "M", permissions: { allow: [...PERMISSION_PROFILES.write.allow], deny: [...PERMISSION_PROFILES.write.deny] }, showFeedbackSurvey: false, showTips: false };
+  fs.writeFileSync(file, JSON.stringify(normalised));
+  const before = fs.statSync(file, { bigint: true });
+  prepareAgyHome(home, "write", { realHome: makeTempDir(), model: "M" });
+  const after = fs.statSync(file, { bigint: true });
+  assert.equal(after.ino, before.ino, "not rewritten");
+  assert.equal(fs.readFileSync(file, "utf8"), JSON.stringify(normalised));
+  prepareAgyHome(home, "write", { realHome: makeTempDir(), model: "Other" });
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).model, "Other", "a real difference is written");
+});
+
+test("a conversation started read-only is copied into the write home before it is resumed", () => {
+  const root = makeTempDir();
+  const cid = "abcdef12-0000-4000-8000-000000000001";
+  const source = path.join(root, "read-only", ".gemini", "antigravity-cli");
+  fs.mkdirSync(path.join(source, "conversations"), { recursive: true });
+  fs.mkdirSync(path.join(source, "brain", cid, "scratch"), { recursive: true });
+  fs.mkdirSync(path.join(source, "annotations"), { recursive: true });
+  fs.writeFileSync(path.join(source, "conversations", `${cid}.db`), "db-v1");
+  fs.writeFileSync(path.join(source, "brain", cid, "scratch", "note.txt"), "artifact");
+  fs.writeFileSync(path.join(source, "annotations", `${cid}.pbtxt`), "ann");
+
+  const writeHome = path.join(root, "write");
+  const target = path.join(writeHome, ".gemini", "antigravity-cli");
+  fs.mkdirSync(path.join(target, "conversations"), { recursive: true });
+  fs.writeFileSync(path.join(target, "conversations", `${cid}.db-wal`), "stale journal");
+
+  assert.equal(syncConversationInto(root, writeHome, cid), path.join(root, "read-only"));
+  assert.equal(fs.readFileSync(path.join(target, "conversations", `${cid}.db`), "utf8"), "db-v1");
+  assert.equal(fs.existsSync(path.join(target, "conversations", `${cid}.db-wal`)), false, "a stale journal is removed");
+  assert.equal(fs.readFileSync(path.join(target, "brain", cid, "scratch", "note.txt"), "utf8"), "artifact");
+  assert.equal(fs.readFileSync(path.join(target, "annotations", `${cid}.pbtxt`), "utf8"), "ann");
+
+  // Already newest in the target: nothing to do.
+  const later = new Date(Date.now() + 60000);
+  fs.utimesSync(path.join(target, "conversations", `${cid}.db`), later, later);
+  assert.equal(syncConversationInto(root, writeHome, cid), null);
+  assert.throws(() => syncConversationInto(root, writeHome, "../escape"), /unsafe conversation value/);
+});
+
+test("a resumed run picks its conversation up from another profile home", async () => {
+  const { cwd, env, home, realHome, log } = fakeSetup();
+  const cid = FAKE_CONVERSATION_ID;
+  const source = path.join(home, "read-only", ".gemini", "antigravity-cli", "conversations");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, `${cid}.db`), "from read-only");
+  const progress = [];
+  const run = await runHeadlessAgent(cwd, {
+    prompt: "apply it",
+    env,
+    agyHomeRoot: home,
+    realHome,
+    permissionProfile: "write",
+    resumeConversationId: cid,
+    onProgress: (event) => progress.push(typeof event === "string" ? event : event.message)
+  });
+  assert.deepEqual(run.failures, []);
+  assert.equal(path.resolve(run.migratedFrom), path.resolve(path.join(home, "read-only")));
+  assert.equal(
+    fs.readFileSync(path.join(home, "write", ".gemini", "antigravity-cli", "conversations", `${cid}.db`), "utf8"),
+    "from read-only"
+  );
+  assert.ok(progress.some((message) => /Copied conversation/.test(message)));
+  assert.equal(path.basename(lastPrintRun(log).home), "write");
+});
+
+test("prompt cleanup leaves a directory that was swapped out from under it", () => {
+  const runDir = makeTempDir();
+  const delivery = buildPromptDelivery({
+    prompt: "q".repeat(INLINE_PROMPT_MAX_CHARS + 5),
+    runDir,
+    binary: "/opt/agy",
+    env: { PATH: "" },
+    platform: "linux"
+  });
+  // Something replaces the prompt directory with a different one holding a
+  // file of the same name.
+  fs.renameSync(delivery.promptDir, `${delivery.promptDir}-moved`);
+  fs.mkdirSync(delivery.promptDir);
+  fs.writeFileSync(path.join(delivery.promptDir, "prompt.md"), "not ours");
+  removePromptDelivery(delivery);
+  assert.equal(fs.readFileSync(path.join(delivery.promptDir, "prompt.md"), "utf8"), "not ours");
 });

@@ -96,7 +96,7 @@ function cleanupSessionJobs(cwd, sessionId) {
       const killTargets = resolveJobKillTargets(job);
       for (const pid of killTargets) {
         try {
-          terminateProcessTree(pid, { expect: buildProcessMarkers() });
+          terminateProcessTree(pid, { expect: buildProcessMarkers([job.agentBinary]) });
         } catch {
         }
       }

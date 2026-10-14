@@ -20,14 +20,29 @@ export const SESSION_ID_ENV = "AGY_CC_SESSION_ID";
 // `agy.cmd` shim, whose cmd.exe is the recorded child on Windows).
 export const OUR_PROCESS_MARKERS = Object.freeze(["agy-bridge.mjs", /(^|[\\/"\s])agy(\.exe|\.cmd|\.bat)?(["\s]|$)/i]);
 
-/** The fixed markers plus the file name of a binary set through AGY_BINARY. */
-export function buildProcessMarkers(env = process.env) {
-  const override = String(env?.AGY_BINARY ?? "").trim();
-  const name = override ? override.split(/[\\/]/).pop() : "";
-  if (!name || /^agy(\.exe|\.cmd|\.bat)?$/i.test(name) || name.length < 3) {
-    return OUR_PROCESS_MARKERS;
+function escapeForRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * The fixed markers plus a whole-token match for every other binary a run was
+ * started with (the job record keeps the binary agy was launched as, so a later
+ * `stop` does not depend on the environment it runs in). A name only matches
+ * as a complete path component, with or without a Windows executable
+ * extension, never as part of a longer word.
+ */
+export function buildProcessMarkers(binaries = []) {
+  const markers = [...OUR_PROCESS_MARKERS];
+  const seen = new Set();
+  for (const binary of binaries) {
+    const name = String(binary ?? "").trim().split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, "");
+    if (!name || /^agy$/i.test(name) || seen.has(name.toLowerCase())) {
+      continue;
+    }
+    seen.add(name.toLowerCase());
+    markers.push(new RegExp(`(^|[\\\\/"\\s])${escapeForRegExp(name)}(\\.exe|\\.cmd|\\.bat)?(["\\s]|$)`, "i"));
   }
-  return [...OUR_PROCESS_MARKERS, name];
+  return markers;
 }
 
 export function nowIso() {
@@ -40,6 +55,7 @@ function normalizeProgressEvent(value) {
     const agentPid = Number.isFinite(Number(agentPidRaw)) ? Number(agentPidRaw) : null;
     return {
       message: String(value.message ?? "").trim(),
+      agentBinary: typeof value.agentBinary === "string" && value.agentBinary.trim() ? value.agentBinary.trim() : null,
       phase: typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : null,
       threadId: typeof value.threadId === "string" && value.threadId.trim() ? value.threadId.trim() : null,
       turnId: typeof value.turnId === "string" && value.turnId.trim() ? value.turnId.trim() : null,
@@ -52,6 +68,7 @@ function normalizeProgressEvent(value) {
 
   return {
     message: String(value ?? "").trim(),
+    agentBinary: null,
     phase: null,
     threadId: null,
     turnId: null,
@@ -103,6 +120,7 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
   let lastThreadId = null;
   let lastTurnId = null;
   let lastAgentPid = null;
+  let lastAgentBinary = null;
 
   return (event) => {
     const normalized = normalizeProgressEvent(event);
@@ -130,6 +148,12 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
     if (normalized.agentPid && normalized.agentPid !== lastAgentPid) {
       lastAgentPid = normalized.agentPid;
       patch.agentPid = normalized.agentPid;
+      changed = true;
+    }
+
+    if (normalized.agentBinary && normalized.agentBinary !== lastAgentBinary) {
+      lastAgentBinary = normalized.agentBinary;
+      patch.agentBinary = normalized.agentBinary;
       changed = true;
     }
 

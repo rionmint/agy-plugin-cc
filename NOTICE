@@ -29,11 +29,12 @@ this project made the following substantive changes:
     `scripts/lib/agy.mjs`, which drives the Antigravity CLI (`agy`) instead of
     the Cursor CLI (`cursor-agent`).
   * Read-only execution no longer relies on a CLI mode. agy keeps tool
-    permissions in a global settings file with no per-run override, so every
-    run starts agy with a plugin-owned home directory and a permission profile
-    (read-only / write / write-commands) written into that home under a lock.
-    The permission mode agy reports at start-up is checked, and a run that did
-    not get the profile is stopped.
+    permissions in a settings file in its home with no per-run override, so
+    every run starts agy with a plugin-owned home, one per permission profile
+    (read-only / write / write-commands), whose settings hold that profile only.
+    The permission mode agy reports at start-up and the home's rules are
+    checked, and a run that did not get its profile is stopped. A conversation
+    continued under another profile is copied into that profile's home.
   * The prompt moved from stdin (which agy ignores) to an attached `-p=` argument,
     with a prompt file in an added directory for long prompts and for Windows
     `.cmd` shims. `--disable-slash-commands` is always passed.

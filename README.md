@@ -95,9 +95,9 @@ no command-line flag to override them for a single run. If that file says
 `"toolPermission": "always-proceed"`, a headless `agy -p` runs terminal commands without asking —
 including under `--mode plan`, which was measured running `run_command` with that setting.
 
-So the plugin never uses your agy home. Every run starts `agy` with **the plugin's own home directory**
-(`$CLAUDE_PLUGIN_DATA/agy-home`, or `AGY_CC_HOME`), and before each run the bridge writes a permission
-profile into that home's `settings.json`:
+So the plugin never uses your agy home. It keeps **one agy home per permission profile**
+(`$CLAUDE_PLUGIN_DATA/agy-homes/<profile>`, or under `AGY_CC_HOME`), starts `agy` with the home of the
+profile a run needs, and keeps that home's `settings.json` holding that profile and nothing else:
 
 | Profile | Used by | Allowed | Denied by rule |
 |---|---|---|---|
@@ -113,15 +113,22 @@ profile into that home's `settings.json`:
   the model you picked. Your `toolPermission`, MCP servers, plugins and rules are not used.
 - **Sign-in still applies.** On Windows the agy sign-in is not stored in the home directory, so the
   plugin's home sees your account (measured). Whether that holds on macOS and Linux depends on where
-  agy keeps the credential there; `/agy-cc:check` runs `agy models` inside the plugin home and says so
-  if it cannot sign in.
+  agy keeps the credential there; `/agy-cc:check` runs `agy models` inside the read-only home and says
+  so if it cannot sign in.
+- **No shared settings to race over.** Because a profile's settings never change, two runs can start
+  at the same moment without one handing the other the wrong permissions, and no lock is needed. agy
+  rewrites its settings file atomically and leaves it alone once it is in its own normalised form
+  (both measured), and the bridge only writes it when it differs, atomically too.
+- **Conversations follow the run.** agy stores a conversation in its home. When a read-only
+  investigation is continued with `--write`, the bridge copies that conversation into the write
+  profile's home first (copying a conversation into another home and resuming it there was measured
+  to work).
 - **Every run is checked at start.** When agy reports its first event, the bridge checks that agy
-  started in `request-review` and that the settings file agy rewrote from what it loaded still holds
-  this run's rules. A run that fails either check, never reports that event, or takes more than 90
-  seconds to start is stopped.
+  started in `request-review` and that the home's settings file holds exactly this run's rules. A run
+  that fails either check, never reports that event, or takes more than 90 seconds to start is
+  stopped, and nothing it printed before that counts.
 
-There is more — argument validation, the settings lock, run-directory containment, pid checks before
-a kill — in [SECURITY.md](./SECURITY.md), including what is *not* defended.
+There is more — argument validation, prompt-file handling, pid checks before a kill — in [SECURITY.md](./SECURITY.md), including what is *not* defended.
 
 ---
 
@@ -165,7 +172,7 @@ cd <repository> && agy -p=<prompt> --output-format stream-json --print-timeout 3
 | Variable | Purpose |
 |---|---|
 | `AGY_BINARY` | Override the `agy` executable path |
-| `AGY_CC_HOME` | Override the plugin's agy home directory |
+| `AGY_CC_HOME` | Override the directory that holds the plugin's agy homes (one per profile) |
 | `AGY_CC_SESSION_ID` | Claude session id (set by the SessionStart hook) |
 | `CLAUDE_PLUGIN_DATA` | Where run state, logs and the agy home are written |
 
