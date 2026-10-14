@@ -381,6 +381,7 @@ export function patchJobIfActive(cwd, jobId, patch = {}) {
       turnId: nextJob.turnId,
       pid: nextJob.pid,
       agentPid: nextJob.agentPid,
+      agentBinary: nextJob.agentBinary ?? null,
       bridgePid: nextJob.bridgePid,
       logFile: nextJob.logFile,
       errorMessage: nextJob.errorMessage

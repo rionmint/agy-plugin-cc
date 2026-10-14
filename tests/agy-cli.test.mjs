@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -637,6 +638,41 @@ test("a conversation with an open journal on either side is not copied", () => {
   fs.mkdirSync(target, { recursive: true });
   fs.writeFileSync(path.join(target, `${cid}.db-wal`), "stale");
   assert.throws(() => syncConversationInto(root, path.join(root, "write"), cid), /looks open in another agy run/);
+  fs.rmSync(path.join(target, `${cid}.db-wal`));
+
+  // A rollback journal (a write in progress, or a crash mid-write) counts too.
+  fs.writeFileSync(path.join(source, "conversations", `${cid}.db-journal`), "hot");
+  assert.throws(() => syncConversationInto(root, path.join(root, "write"), cid), /looks open in another agy run/);
+});
+
+test("a newer copy without artifacts leaves none of the older ones behind", () => {
+  const root = makeTempDir();
+  const cid = "abcdef12-0000-4000-8000-000000000004";
+  const target = seedConversation(root, "write", cid, { db: "old", brainFile: "old artifact", annotation: "old ann" });
+  const older = new Date(Date.now() - 60_000);
+  fs.utimesSync(path.join(target, "conversations", `${cid}.db`), older, older);
+  seedConversation(root, "read-only", cid, { db: "new", brainFile: null, annotation: null });
+
+  assert.equal(syncConversationInto(root, path.join(root, "write"), cid), path.join(root, "read-only"));
+  assert.equal(fs.readFileSync(path.join(target, "conversations", `${cid}.db`), "utf8"), "new");
+  assert.equal(fs.existsSync(path.join(target, "brain", cid)), false, "brain the newer copy lacks is removed");
+  assert.equal(fs.existsSync(path.join(target, "annotations", `${cid}.pbtxt`)), false, "annotation the newer copy lacks is removed");
+  assert.deepEqual(fs.readdirSync(path.join(target, "brain")), [], "nothing is left aside");
+});
+
+test("a long prompt without a run directory gets a fresh temp directory of its own", () => {
+  const delivery = buildPromptDelivery({
+    prompt: "t".repeat(INLINE_PROMPT_MAX_CHARS + 5),
+    runDir: null,
+    binary: "/opt/agy",
+    env: { PATH: "" },
+    platform: "linux"
+  });
+  assert.equal(path.dirname(delivery.promptDir), path.resolve(os.tmpdir()));
+  assert.match(path.basename(delivery.promptDir), /^agy-cc-prompt-/);
+  assert.equal(fs.readFileSync(delivery.promptFile, "utf8").length, INLINE_PROMPT_MAX_CHARS + 5);
+  removePromptDelivery(delivery);
+  assert.equal(fs.existsSync(delivery.promptDir), false);
 });
 
 test("a conversation containing a link is not copied", () => {

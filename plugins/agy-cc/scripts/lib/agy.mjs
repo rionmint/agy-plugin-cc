@@ -339,6 +339,23 @@ function writeFileAtomic(filePath, content) {
   fs.renameSync(tempPath, filePath);
 }
 
+/**
+ * A directory the bridge writes prompts into must be a real directory of the
+ * current user, and on POSIX not writable by anyone else: whoever can write
+ * there could swap things in it between the bridge's checks and its writes. A
+ * directory that is ours but open to others is closed to owner-only.
+ */
+function assertOwnDirectory(dirPath, what) {
+  const stat = assertRealDirectory(dirPath, what);
+  if (process.platform !== "win32" && (stat.mode & 0o022) !== 0) {
+    fs.chmodSync(dirPath, 0o700);
+    if ((fs.lstatSync(dirPath).mode & 0o022) !== 0) {
+      throw new Error(`Refusing to use ${what} ${dirPath}: other users can write to it.`);
+    }
+  }
+  return stat;
+}
+
 function assertRealDirectory(dirPath, what) {
   const stat = fs.lstatSync(dirPath);
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
@@ -459,14 +476,28 @@ function conversationFiles(home, conversationId) {
 function databaseWrittenMs(filePath) {
   try {
     const stat = fs.lstatSync(filePath);
-    return stat.isFile() ? stat.mtimeMs : -1;
+    // Whole milliseconds: a copy gets the source's time through a Date, which
+    // drops anything finer, and must then compare equal, not older.
+    return stat.isFile() ? Math.floor(stat.mtimeMs) : -1;
   } catch {
     return -1;
   }
 }
 
 function journalOf(dbPath) {
-  return [`${dbPath}-wal`, `${dbPath}-shm`].filter((candidate) => fs.existsSync(candidate) || isLink(candidate));
+  return [`${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`].filter(
+    (candidate) => fs.existsSync(candidate) || isLink(candidate)
+  );
+}
+
+/** Move a path aside and delete it; used to drop what the newer copy does not have. */
+function discardPath(target) {
+  if (!fs.existsSync(target) && !isLink(target)) {
+    return;
+  }
+  const aside = `${target}.agy-cc-old-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  fs.renameSync(target, aside);
+  fs.rmSync(aside, { recursive: true, force: true });
 }
 
 function assertNoLinksInTree(root) {
@@ -553,21 +584,20 @@ export function syncConversationInto(homeRoot, targetHome, conversationId) {
     assertRealDirectory(dir, "a conversation directory");
   }
 
+  // The target ends up with exactly the source's artifacts: what the source
+  // has replaces the target's, and what it lacks is removed from the target.
   if (hasBrain) {
     const staged = fs.mkdtempSync(path.join(path.dirname(target.brain), `.${target.id}.staging-`));
     fs.cpSync(source.brain, staged, { recursive: true, force: true, errorOnExist: false, preserveTimestamps: true });
-    let aside = null;
-    if (fs.existsSync(target.brain) || isLink(target.brain)) {
-      aside = `${target.brain}.agy-cc-old-${Math.random().toString(36).slice(2, 8)}`;
-      fs.renameSync(target.brain, aside);
-    }
+    discardPath(target.brain);
     fs.renameSync(staged, target.brain);
-    if (aside) {
-      fs.rmSync(aside, { recursive: true, force: true });
-    }
+  } else {
+    discardPath(target.brain);
   }
   if (hasAnnotation) {
     replaceFileFrom(source.annotation, target.annotation);
+  } else {
+    discardPath(target.annotation);
   }
   replaceFileFrom(source.db, target.db);
   return newestHome;
@@ -808,9 +838,10 @@ function sameIdentity(filePath, identity) {
  *
  * Short prompts go inline. A long prompt, or any prompt when agy is reached
  * through a Windows `.cmd` shim (where `cmd` would expand `%VAR%` inside it),
- * is written to a new private directory under `runDir`, that directory is
- * added to agy's workspace, and the argv carries a fixed sentence pointing at
- * the file.
+ * is written to a new private directory under `runDir` (or, without one, a new
+ * directory of its own in the system temp directory), that directory is added
+ * to agy's workspace, and the argv carries a fixed sentence pointing at the
+ * file.
  *
  * The directory is always freshly created (`mkdtemp`) and the file is opened
  * exclusively, so a link planted at a predictable path cannot redirect the
@@ -823,16 +854,19 @@ export function buildPromptDelivery({ prompt, runDir, binary, env = process.env,
   if (!shim && text.length <= INLINE_PROMPT_MAX_CHARS) {
     return { promptArg: text, addDirs: [], promptFile: null };
   }
-  if (!runDir) {
-    throw new Error("This prompt is too long to pass inline and no run directory was given for it.");
+  // Without a run directory the prompt gets a fresh directory of its own in
+  // the system temp directory: no predictable parent another user could own.
+  const parent = runDir ?? os.tmpdir();
+  if (shim && /[%!"^\r\n]/.test(parent)) {
+    throw new Error(`The run directory path cannot be passed through a .cmd shim safely: ${parent}`);
   }
-  if (shim && /[%!"^\r\n]/.test(runDir)) {
-    throw new Error(`The run directory path cannot be passed through a .cmd shim safely: ${runDir}`);
+  const createdRunDir = Boolean(runDir) && !fs.existsSync(runDir);
+  if (runDir) {
+    fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    assertOwnDirectory(runDir, "the run directory");
   }
-  const createdRunDir = !fs.existsSync(runDir);
-  fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
   const runDirIdentity = createdRunDir ? fileIdentity(runDir) : null;
-  const promptDir = fs.mkdtempSync(path.join(runDir, "prompt-"));
+  const promptDir = fs.mkdtempSync(path.join(parent, runDir ? "prompt-" : "agy-cc-prompt-"));
   const promptDirIdentity = fileIdentity(promptDir);
   const promptFile = path.join(promptDir, "prompt.md");
   const delivery = {
@@ -923,11 +957,12 @@ export async function runHeadlessAgent(cwd, options = {}) {
   const homeRoot = options.agyHomeRoot ?? resolveAgyHomeRoot(env);
   const home = path.join(homeRoot, profileName);
 
-  // A caller that does not supply a run directory gets prompt files under the
-  // system temp directory; either way only what this run created is removed.
+  // A caller that does not supply a run directory gets a fresh prompt
+  // directory in the system temp directory; either way only what this run
+  // created is removed.
   const delivery = buildPromptDelivery({
     prompt: options.prompt,
-    runDir: options.runDir ?? path.join(os.tmpdir(), "agy-cc-prompts"),
+    runDir: options.runDir ?? null,
     binary,
     env,
     platform

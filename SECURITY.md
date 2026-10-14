@@ -36,7 +36,7 @@ These are properties of the code, not instructions to a model.
 | Read-only runs cannot write files or run commands | The `read-only` profile denies `write_file(*)`, `command(*)`, `unsandboxed(*)`, `execute_url(*)` and `mcp(*)` by rule, on top of `toolPermission: request-review`. Measured against agy 1.3.5 on Windows: writes and commands were refused, reads and URL reads worked |
 | Concurrent runs cannot hand each other the wrong profile | There is no shared settings file to swap: each profile has its own home, and every writer of a home writes the same profile. The bridge writes the file only when it differs in substance, with an atomic rename; agy rewrites it atomically and not at all once it is normalised (both measured on agy 1.3.5). A reader therefore only ever sees a complete file holding that home's profile, and no lock is involved — an orphaned or slow agy reads the same profile whenever it starts. The separation is checked physically, not just by name: the home root, each home and its settings folder must be real directories (not symlinks or junctions) owned by the current user, and no two profile homes may be the same directory, or the run stops. `prepareAgyHome` / `assertPrivateHomes`; `tests/agy-cli.test.mjs` runs three profiles concurrently and checks each run's home and rules, and refuses a junctioned home |
 | A run that did not get its profile is stopped | Two checks at agy's first `stream-json` event (`init`): the reported permission mode must be `request-review`, and the home's settings file must hold exactly this run's allow / deny rules, the expected base mode and artifact policy, and no key outside agy's documented settings. A malformed file (an explicit null, a wrong type, an unknown key, a link in place of the file) never matches, and an error while handling an event stops the run. Either mismatch kills the run and fails it; events that arrive before the checks pass, and a run that never passes them within 90 seconds, fail closed. `runHeadlessAgent` / `settingsMatchProfile`, tested with fake agy runs that start in `always-proceed`, that rewrite their settings during start-up, that send a result without `init`, and against malformed settings |
-| A conversation moved between homes is copied whole or not at all | Continuing a conversation under another profile copies only `conversations/<id>.db`, `brain/<id>/` and `annotations/<id>.pbtxt`, for an id that passed the conversation-id pattern. The copy is refused while a SQLite journal sits next to the database on either side (agy has it open, or was killed mid-write) and when anything in it is a link or not a plain file. Artifacts are staged and swapped in, and the database — whose time decides which copy is newest — is replaced last, atomically, keeping the source's timestamp, so a copy that fails half-way leaves the source still newest and is redone next time. `syncConversationInto`, with tests for open journals, links and replacement |
+| A conversation moved between homes is copied whole or not at all | Continuing a conversation under another profile copies only `conversations/<id>.db`, `brain/<id>/` and `annotations/<id>.pbtxt`, for an id that passed the conversation-id pattern. The copy is refused while a SQLite journal (`-wal`, `-shm` or a rollback `-journal`) sits next to the database on either side (agy has it open, or was killed mid-write) and when anything in it is a link or not a plain file. The target ends up with exactly the source's artifacts: artifacts are staged and swapped in, and any the source does not have are removed from the target. The database — whose time decides which copy is newest — is replaced last, atomically, keeping the source's timestamp (compared in whole milliseconds, the precision a copied timestamp keeps), so a copy that fails half-way leaves the source still newest and is redone next time. `syncConversationInto`, with tests for open journals, links, replacement and artifacts the source lacks |
 | No shell is used to find or run a binary | `runCommand` and `spawnCli` pass `shell: false`; libuv searches `PATH`/`PATHEXT` itself, so repository-derived argv (git refs in particular) is never re-parsed by a shell. `lib/git.mjs` forces `shell: false` on every git call |
 | Windows `.cmd` / `.bat` shims cannot be used to inject commands | Every argument is quoted for the child's CRT parser and then caret-escaped for `cmd`, **twice** for a batch target, because a batch file re-parses its own `%*`. This is the CVE-2024-24576 class of bug. The batch file's own path is not escaped, so a path containing `%`, `!`, `^`, `"` or a line break is refused. `quoteWindowsArg` / `buildCmdLine` in `scripts/lib/process.mjs`, with round-trip tests in `tests/windows-escaping.test.mjs` |
 | Free-form text never reaches a `cmd` command line | agy needs the prompt in argv. When agy is a real executable that is safe (no shell parses it). When it is reached through a `.cmd` shim, the prompt is written to a file and argv carries only a fixed sentence naming that file. `buildPromptDelivery` in `scripts/lib/agy.mjs` |
@@ -46,7 +46,7 @@ These are properties of the code, not instructions to a model.
 | agy's false successes are failures | Exit 0 with `SUCCESS` is not trusted: a refused permission, a fired `--print-timeout`, an empty answer and an unknown `--conversation` id each fail the run. `judgeAgyRun` |
 | Run ids cannot escape the run directory | Run ids arrive from slash-command arguments and become a path component; `assertSafeJobId` in `scripts/lib/state.mjs` rejects anything outside `[A-Za-z0-9._-]` or containing `..` |
 | Repository symlinks cannot exfiltrate files | Untracked file bodies are inlined into the prompt. `formatUntrackedFile` uses `lstat`, skips symlinks and non-regular files, and refuses anything whose real path is outside the repository. `tests/untracked-file-safety.test.mjs` |
-| Prompt files cannot be redirected, and cleanup removes only what it made | A long prompt goes into a directory created fresh with `mkdtemp`, and the file is opened exclusively (`wx`), so a link planted at a predictable path is never written through. The directory and the file are remembered by device and inode; afterwards each is removed only while it is still that same object (the directory checked before the file in it), and nothing is removed recursively. `buildPromptDelivery` / `removePromptDelivery` |
+| Prompt files cannot be redirected, and cleanup removes only what it made | A long prompt goes into a directory created fresh with `mkdtemp` (inside the run's own directory, or, for a run without one, directly in the system temp directory, never under a predictable shared parent), and the file is opened exclusively (`wx`), so a link planted at a predictable path is never written through. On POSIX a run directory must belong to the current user and is closed to owner-only if others can write to it. The directory and the file are remembered by device and inode; afterwards each is removed only while it is still that same object (the directory checked before the file in it), and nothing is removed recursively. `buildPromptDelivery` / `removePromptDelivery` |
 | Pruning cannot delete arbitrary files | A job record's `logFile` path comes from json on disk. It is only unlinked when it really resolves inside that workspace's run directory, and only when it is a regular file. `removeJobLogIfOwned` |
 | An image never overwrites a file, and a saved image does not hide a failed run | The copy is opened with `wx`; a taken name gets a `-2`, `-3`… suffix. When agy drew a picture but the run itself failed (a timeout, an error status), the picture is saved and the run is still reported as failed. `executeImageRun` |
 | Run state is not readable by other local users | The run directory and the agy home are created `0o700` on POSIX; job records, logs, prompt files and settings are written `0o600`. On Windows the default ACL applies |
@@ -87,12 +87,15 @@ calling them one would be a lie.
 - **The single-quoting rule for `review`, `critique` and `image` is also an instruction.** Those
   commands still hand an argument string to a `Bash` call that a model composes.
 - **The kill check is a pattern match.** Before signalling, the plugin reads the process command line
-  and requires it to *start* with one of its own programs: node running `agy-bridge.mjs`, an `agy` /
-  `agy.exe` binary, cmd.exe running an `agy.cmd` shim, or the exact path the job recorded when it
-  launched agy. A process that only mentions these among its arguments does not match. That stops
-  the ordinary pid-reuse accident, but it is not identity verification (no process start time is
-  compared). Unreadable command lines fail closed: the run is
-  marked cancelled and the process is left alone, so a runaway can survive a `stop`.
+  and requires it to *start* like one of its own processes: node (with any node flags) running
+  `agy-bridge.mjs` as its script with a subcommand that starts a run (`run-worker`, `run`, `review`,
+  `critique`, `image`), or the exact agy path the job recorded together with its pid (directly, or as
+  the `agy.cmd` shim cmd.exe runs). A process that only mentions these among its arguments does not
+  match, and an `agy` that is not the recorded program does not either. That stops the ordinary
+  pid-reuse accident, but it is not identity verification (no process start time is compared).
+  Unreadable command lines fail closed: the run is marked cancelled and the process is left alone, so
+  a runaway can survive a `stop`. The pid and the program are recorded before anything is written to
+  the run log, so a log that cannot be written does not cost a run its stop target.
 - **The credential filter is a name filter.** `.env`, `id_rsa`, `*.pem` and similar untracked files are
   held back from the prompt; a secret in a file named something else is not.
 - **Only untracked files get that treatment.** Staged content and branch diffs reach the prompt as a
@@ -100,6 +103,18 @@ calling them one would be a lie.
 
 ## Not defended
 
+- **Other processes running as you, inside the plugin's own directories.** The plugin data directory
+  (`CLAUDE_PLUGIN_DATA`, or `AGY_CC_HOME` for the agy homes) is inside the trust boundary. The checks
+  on it (real directories, owned by you, not links, homes physically distinct) are made right before
+  use, and Node has no directory-handle-relative file operations, so a process running as your user
+  that swaps a directory there in the instant between a check and a write or delete (or that replaces
+  a directory above the home root) is not stopped. Such a process can already do anything your user
+  can. Against other *users* it does better: prompt files never go under a predictable shared temp
+  path, and on POSIX an agy home or run directory owned by someone else is refused. Inside Claude Code
+  everything lives under `CLAUDE_PLUGIN_DATA`. Only when the bridge runs without it do run state and
+  the agy homes fall back to fixed folders in the system temp directory (`agy-cc-runs`,
+  `agy-cc-homes`); the homes there get the ownership check, the run-state folder is created
+  owner-only but not checked.
 - **Prompt injection.** Repository content goes into the prompt. A hostile repository can try to steer
   the agent. The mitigation is the read-only profile on review and critique, not prompt filtering.
 - **What the read-only profile still allows.** A steered agent can read files and fetch URLs, so it

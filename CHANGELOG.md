@@ -27,7 +27,7 @@ What is new for agy:
 - A sign-in that headless agy cannot complete is detected and the run stopped at once instead of
   waiting for agy's own one-minute login timeout.
 
-Hardened after two rounds of adversarial review (Codex) before release:
+Hardened after four rounds of adversarial review (Codex) before release:
 
 - The first version shared one agy home and swapped profiles in its settings file under a lock. The
   review showed lock recovery could still let two runs overlap, and an orphaned agy could read the
@@ -50,3 +50,11 @@ Hardened after two rounds of adversarial review (Codex) before release:
 - `stop` only signals a process whose command line starts with one of the plugin's programs or the
   exact agy path recorded in the job, including the `agy.cmd` shim run by cmd.exe.
 - A progress reporter that throws can no longer abort a run after agy has been started.
+- A fourth round tightened the edges: a rollback `-journal` also blocks a conversation copy, artifacts
+  the newer copy lacks are removed rather than kept, copy timestamps compare in whole milliseconds
+  (a copy no longer looks older than its source), a prompt without a run directory gets its own
+  `mkdtemp` directory instead of a shared temp folder, the bridge marker requires the script and a
+  run subcommand in place (quoted or spaced paths included) and agy matches only the recorded
+  program, and the stop target is recorded before, and independently of, the run log.
+- The plugin data directory is documented as inside the trust boundary: races by other processes
+  running as the same user there are not defended (SECURITY.md, Not defended).

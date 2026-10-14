@@ -16,16 +16,20 @@ export const SESSION_ID_ENV = "AGY_CC_SESSION_ID";
 
 // Pids are read back from a json file, and the operating system reuses pids.
 // A process is only signalled when its command line still *starts* like a run
-// this plugin started: node running the bridge worker, an `agy` / `agy.exe`
-// binary, or cmd.exe running an `agy.cmd` shim (the recorded child on Windows
-// when agy is reached through a shim). A process that merely mentions one of
-// these among its arguments is not ours.
+// this plugin started. For the bridge that is node (and any node flags) running
+// agy-bridge.mjs as its script with one of the subcommands that start a run;
+// the script path may be quoted (Windows, when it has spaces) or unquoted with
+// spaces (as POSIX `ps -o args=` prints it). For agy it is the exact program
+// the run recorded (see buildProcessMarkers). A process that merely mentions
+// one of these among its arguments is not ours.
 const PROGRAM = (name) => String.raw`(?:"(?:[^"]*[\\/])?${name}"|(?:[^"\s]*[\\/])?${name})`;
+const BRIDGE_SCRIPT = String.raw`(?:"[^"]*[\\/]agy-bridge\.mjs"|(?:[A-Za-z]:)?[\\/][^"\s]*(?:\s[^"\s-][^"\s]*)*?[\\/]agy-bridge\.mjs|agy-bridge\.mjs)`;
 
 export const OUR_PROCESS_MARKERS = Object.freeze([
-  new RegExp(String.raw`^\s*${PROGRAM(String.raw`node(?:\.exe)?`)}\s+(?:.*\s)?"?[^"\s]*agy-bridge\.mjs"?(?:\s|$)`, "i"),
-  new RegExp(String.raw`^\s*${PROGRAM(String.raw`agy(?:\.exe)?`)}(?:\s|$)`, "i"),
-  new RegExp(String.raw`^\s*${PROGRAM(String.raw`cmd(?:\.exe)?`)}\s+/d\s+/s\s+/c\s+"+(?:[^"]*[\\/])?agy\.(?:cmd|bat)"`, "i")
+  new RegExp(
+    String.raw`^\s*${PROGRAM(String.raw`node(?:\.exe)?`)}\s+(?:-\S+\s+)*${BRIDGE_SCRIPT}\s+(?:run-worker|run|review|critique|image)(?:\s|$)`,
+    "i"
+  )
 ]);
 
 function escapeForRegExp(text) {
@@ -33,10 +37,11 @@ function escapeForRegExp(text) {
 }
 
 /**
- * The fixed markers plus the exact program a run was started with. The job
- * record keeps the resolved path agy was launched from, so `stop` matches that
- * path at the start of the command line (or as the batch file cmd.exe runs),
- * and does not take any authority from the environment `stop` itself runs in.
+ * The bridge marker plus the exact program a run was started with. The job
+ * record keeps the resolved path agy was launched from (recorded together with
+ * its pid), so `stop` matches that path at the start of the command line (or as
+ * the batch file cmd.exe runs), and does not take any authority from the
+ * environment `stop` itself runs in.
  */
 export function buildProcessMarkers(binaries = []) {
   const markers = [...OUR_PROCESS_MARKERS];
@@ -184,12 +189,18 @@ export function createProgressReporter({ stderr = false, logFile = null, onEvent
   return (eventOrMessage) => {
     const event = normalizeProgressEvent(eventOrMessage);
     const stderrMessage = event.stderrMessage ?? event.message;
-    if (stderr && stderrMessage) {
-      process.stderr.write(`[agy-cc] ${stderrMessage}\n`);
-    }
-    appendLogLine(logFile, event.message);
-    appendLogBlock(logFile, event.logTitle, event.logBody);
+    // Tracking (pids, conversation id) is recorded first and on its own, so a
+    // log that cannot be written never costs the run its stop target.
     onEvent?.(event);
+    try {
+      if (stderr && stderrMessage) {
+        process.stderr.write(`[agy-cc] ${stderrMessage}\n`);
+      }
+      appendLogLine(logFile, event.message);
+      appendLogBlock(logFile, event.logTitle, event.logBody);
+    } catch {
+      // logging is best effort
+    }
   };
 }
 
