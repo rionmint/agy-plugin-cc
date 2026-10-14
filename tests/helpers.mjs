@@ -4,8 +4,23 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
+// Every test file runs in its own process; what it created in the temp
+// directory goes when that process exits, so test runs do not pile up there.
+const createdTempDirs = [];
+process.on("exit", () => {
+  for (const dir of createdTempDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 2 });
+    } catch {
+      // still in use (a background worker on Windows): left for the OS
+    }
+  }
+});
+
 export function makeTempDir(prefix = "agy-cc-plugin-test-") {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  createdTempDirs.push(dir);
+  return dir;
 }
 
 export function writeExecutable(filePath, source) {

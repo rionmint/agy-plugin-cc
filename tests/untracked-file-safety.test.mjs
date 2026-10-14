@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -24,7 +23,7 @@ function reviewText(repo) {
 }
 
 function canSymlink() {
-  const probe = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cc-symlink-probe-"));
+  const probe = makeTempDir("agy-cc-symlink-probe-");
   const target = path.join(probe, "target.txt");
   fs.writeFileSync(target, "probe");
   try {
