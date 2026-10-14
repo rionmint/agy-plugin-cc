@@ -89,6 +89,42 @@ test("delegate forwards --add-dir and --timeout", () => {
   assert.equal(argv[argv.indexOf("--print-timeout") + 1], "120s");
 });
 
+test("--plugin-data after other options is used, not sent to agy as prompt text", () => {
+  // A call written by hand put it after --fresh. As an unknown option it was
+  // dropped with a warning, its directory went to agy at the front of the
+  // prompt, and the run was stored in the temp fallback.
+  const { repo, binDir, pluginDataDir, fakeAgyLog } = setupReviewableRepo();
+  const otherPlugin = makeTempDir();
+
+  const result = run("node", [SCRIPT, "run", "--fresh", "--plugin-data", pluginDataDir, "read the code"], {
+    cwd: repo,
+    env: buildEnv(binDir, { CLAUDE_PLUGIN_DATA: otherPlugin, AGY_CC_PLUGIN_DATA: "", FAKE_AGY_LOG: fakeAgyLog })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /ignoring unknown option/);
+  const { prompt } = lastPrintRun(fakeAgyLog);
+  assert.equal(prompt.trim(), "read the code");
+  assert.ok(fs.existsSync(path.join(pluginDataDir, "state")), "state is in the given directory");
+  assert.ok(!fs.existsSync(path.join(otherPlugin, "state")), "not in the other plugin's");
+});
+
+test("--plugin-data right after the subcommand wins over a later one", () => {
+  const { repo, binDir, pluginDataDir, fakeAgyLog } = setupReviewableRepo();
+  const later = makeTempDir();
+
+  const result = run("node", [SCRIPT, "run", "--plugin-data", pluginDataDir, "--fresh --plugin-data " + later + " read the code"], {
+    cwd: repo,
+    env: buildEnv(binDir, { AGY_CC_PLUGIN_DATA: "", FAKE_AGY_LOG: fakeAgyLog })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /ignoring --plugin-data/);
+  assert.equal(lastPrintRun(fakeAgyLog).prompt.trim(), "read the code");
+  assert.ok(fs.existsSync(path.join(pluginDataDir, "state")));
+  assert.ok(!fs.existsSync(path.join(later, "state")));
+});
+
 test("delegate refuses an --add-dir that is not a directory", () => {
   const { repo, binDir, pluginDataDir, fakeAgyLog } = setupReviewableRepo();
 

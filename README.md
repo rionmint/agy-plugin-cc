@@ -185,7 +185,11 @@ exported into the session — with several bridge plugins installed (Codex, Grok
 another plugin's directory. So the hook exports `AGY_CC_PLUGIN_DATA` rather than the shared name, and
 the commands also pass `--plugin-data "${CLAUDE_PLUGIN_DATA}"` right after the subcommand, which
 Claude Code fills in from the command text. The hook's value wins; the flag is used when the hook has
-not run in the session (right after installing the plugin, for example).
+not run in the session (right after installing the plugin, for example). Run by hand, the bridge
+also takes the flag among the other options: the first directory set wins (the hook's, then the flag
+right after the subcommand, then a later one), and one that is ignored is reported. Without any of
+them, run state and the agy homes go to `agy-cc-runs` and `agy-cc-homes` in the system temp
+directory, where the plugin's commands do not see them.
 
 The same hook keeps its own export file to one line per variable. Claude Code puts these files into
 every Bash call's command line, and a long-lived session whose hooks append the same lines on every

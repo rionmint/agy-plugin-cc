@@ -189,6 +189,9 @@ function normalizeArgv(argv) {
 function parseCommandInput(argv, config = {}) {
   const parsed = parseArgs(normalizeArgv(argv), {
     ...config,
+    // A call written by hand can put --plugin-data among the other options.
+    // As an unknown option it was dropped and its directory became prompt text.
+    valueOptions: [...(config.valueOptions ?? []), "plugin-data"],
     unknownMode: config.unknownMode ?? "warn",
     aliasMap: {
       C: "cwd",
@@ -200,6 +203,7 @@ function parseCommandInput(argv, config = {}) {
       process.stderr.write(`Warning: ignoring unknown option ${token}\n`);
     }
   }
+  takeLaterPluginDataOption(parsed.options);
   return parsed;
 }
 
@@ -1341,11 +1345,25 @@ async function handleCancel(argv) {
 }
 
 /**
- * `--plugin-data <dir>`, accepted only right after the subcommand (where the
- * commands put it), so prompt text and other options are never taken for it.
- * The commands fill it from Claude Code's `${CLAUDE_PLUGIN_DATA}`, which is
- * this plugin's own directory there; the environment variable of that name in
- * a Bash call can be another plugin's.
+ * Puts a `--plugin-data` value into `AGY_CC_PLUGIN_DATA` unless one is already
+ * there, so the first one wins: the hook's export, then the flag right after
+ * the subcommand, then one further along. An empty value is no value.
+ */
+function applyPluginDataValue(value, env) {
+  const current = env[PLUGIN_DATA_OVERRIDE_ENV];
+  if (value == null || !String(value).trim() || (current && String(current).trim())) {
+    return false;
+  }
+  env[PLUGIN_DATA_OVERRIDE_ENV] = path.resolve(String(value).trim());
+  return true;
+}
+
+/**
+ * `--plugin-data <dir>` right after the subcommand, where the commands put it.
+ * Read before anything else, so the raw argument string after it cannot
+ * replace it. The commands fill it from Claude Code's `${CLAUDE_PLUGIN_DATA}`,
+ * which is this plugin's own directory there; the environment variable of
+ * that name in a Bash call can be another plugin's.
  *
  * A `AGY_CC_PLUGIN_DATA` already in the environment wins: this plugin's own
  * SessionStart hook exports it from the host's value, which is right even on a
@@ -1371,11 +1389,31 @@ export function takePluginDataOption(args, env = process.env) {
     value = rest[0].slice("--plugin-data=".length);
     rest.splice(0, 1);
   }
-  const current = env[PLUGIN_DATA_OVERRIDE_ENV];
-  if (value !== null && value.trim() && !(current && String(current).trim())) {
-    env[PLUGIN_DATA_OVERRIDE_ENV] = path.resolve(value.trim());
-  }
+  applyPluginDataValue(value, env);
   return [subcommand, ...rest];
+}
+
+/**
+ * `--plugin-data` further along, among the other options (a call written by
+ * hand). It only applies when no directory was set before it, and says so when
+ * it is ignored.
+ */
+export function takeLaterPluginDataOption(options, env = process.env) {
+  if (!Object.hasOwn(options, "plugin-data")) {
+    return;
+  }
+  const value = String(options["plugin-data"]);
+  delete options["plugin-data"];
+  if (value.startsWith("--")) {
+    throw new Error("--plugin-data needs a directory.");
+  }
+  if (applyPluginDataValue(value, env) || !value.trim()) {
+    return;
+  }
+  const current = path.resolve(String(env[PLUGIN_DATA_OVERRIDE_ENV]).trim());
+  if (path.resolve(value.trim()) !== current) {
+    process.stderr.write(`Warning: ignoring --plugin-data ${value}; the plugin data directory is already ${current}\n`);
+  }
 }
 
 async function main() {

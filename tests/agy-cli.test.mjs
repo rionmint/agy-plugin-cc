@@ -43,7 +43,7 @@ import {
 import { buildCmdLine, runCommand } from "../plugins/agy-cc/scripts/lib/process.mjs";
 import { buildProcessMarkers, OUR_PROCESS_MARKERS } from "../plugins/agy-cc/scripts/lib/tracked-jobs.mjs";
 import { resolvePluginDataDir } from "../plugins/agy-cc/scripts/lib/state.mjs";
-import { takePluginDataOption } from "../plugins/agy-cc/scripts/agy-bridge.mjs";
+import { takeLaterPluginDataOption, takePluginDataOption } from "../plugins/agy-cc/scripts/agy-bridge.mjs";
 
 function fakeSetup(scenario = "default", extra = {}) {
   const binDir = makeTempDir();
@@ -793,4 +793,19 @@ test("--plugin-data is only taken right after the subcommand, and the hook's val
   const twice = {};
   assert.deepEqual(takePluginDataOption(["check", "--plugin-data", "/a", "--plugin-data", "/b"], twice), ["check", "--plugin-data", "/b"]);
   assert.equal(twice.AGY_CC_PLUGIN_DATA, path.resolve("/a"));
+});
+
+test("--plugin-data further along applies only when nothing set a directory before it", () => {
+  const unset = {};
+  const options = { fresh: true, "plugin-data": "/by-hand" };
+  takeLaterPluginDataOption(options, unset);
+  assert.equal(unset.AGY_CC_PLUGIN_DATA, path.resolve("/by-hand"));
+  assert.deepEqual(options, { fresh: true }, "the option is consumed");
+  const set = { AGY_CC_PLUGIN_DATA: "/from-hook" };
+  takeLaterPluginDataOption({ "plugin-data": "/later" }, set);
+  assert.equal(set.AGY_CC_PLUGIN_DATA, "/from-hook");
+  const empty = {};
+  takeLaterPluginDataOption({ "plugin-data": "" }, empty);
+  assert.equal(empty.AGY_CC_PLUGIN_DATA, undefined);
+  assert.throws(() => takeLaterPluginDataOption({ "plugin-data": "--model" }, {}), /needs a directory/);
 });

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 — 2026-10-14
+
+- **`--plugin-data` is also read among the other options.** A session that ran the bridge by hand put
+  it after `--fresh`. The bridge only read it right after the subcommand, so it warned about an
+  unknown option, sent the directory to agy at the front of the prompt, and stored the run in the
+  temp fallback. It is now a known option of every subcommand. The first directory set still wins
+  (the hook's export, then the flag right after the subcommand, then a later one), and a later one
+  that is ignored is reported.
+
 ## 0.1.2 — 2026-10-14
 
 - **`/agy-cc:check` prints one fixed table.** The command used to run the bridge with `--json` and let
