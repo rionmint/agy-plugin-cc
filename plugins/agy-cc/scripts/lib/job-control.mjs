@@ -38,6 +38,9 @@ export function resolveJobKindLabel(kind, jobClass = null) {
   if (kind === "review" || jobClass === "review") {
     return "review";
   }
+  if (kind === "image" || jobClass === "image") {
+    return "image";
+  }
   if (kind === "task" || kind === "run" || jobClass === "task") {
     return "delegate";
   }

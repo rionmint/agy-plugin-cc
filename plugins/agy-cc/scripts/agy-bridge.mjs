@@ -226,12 +226,37 @@ function shorten(text, limit = 96) {
   return `${normalized.slice(0, limit - 3)}...`;
 }
 
+// agy answers in Markdown, so a bare heading such as "### Findings" is skipped
+// in favour of the first line that says something.
 function firstMeaningfulLine(text, fallback) {
-  const line = String(text ?? "")
+  const lines = String(text ?? "")
     .split(/\r?\n/)
     .map((value) => value.trim())
-    .find(Boolean);
+    .filter(Boolean);
+  const line = lines.find((value) => !/^#{1,6}\s/.test(value)) ?? lines[0];
   return line ?? fallback;
+}
+
+/**
+ * Tell the user when the bridge had to continue a turn that agy ended on a
+ * refused permission, and what would have let agy do it.
+ */
+function buildRecoveryNotes(run) {
+  const refused = (run.recoveredFrom ?? []).flat();
+  if (refused.length === 0) {
+    return [];
+  }
+  const names = [...new Set(refused.map((entry) => [entry?.action, entry?.display_name].filter(Boolean).join("/")))];
+  const notes = [
+    `agy stopped on a permission this run does not grant (${names.join(", ")}); the bridge continued the same conversation once without it.`
+  ];
+  if (refused.some((entry) => entry?.action === "read_file")) {
+    notes.push("If agy needed files outside this repository, rerun with --add-dir <that directory>.");
+  }
+  if (refused.some((entry) => entry?.action === "write_file")) {
+    notes.push("agy can only edit files inside the repository it was started in.");
+  }
+  return notes;
 }
 
 async function buildCheckReport(cwd, actionsTaken = []) {
@@ -377,7 +402,8 @@ function agyPayload(run) {
     conversationId: run.conversationId,
     permissionProfile: run.permissionProfile,
     attempts: run.attempts ?? 1,
-    deniedActions: run.deniedActions
+    deniedActions: run.deniedActions,
+    notes: buildRecoveryNotes(run)
   };
 }
 
@@ -457,7 +483,8 @@ async function executeReviewRun(request) {
       rendered: renderReviewResult(parsed, {
         reviewLabel: reviewName,
         targetLabel: context.target.label,
-        failures
+        failures,
+        notes: buildRecoveryNotes(run)
       }),
       summary:
         parsed.parsed?.summary ??
@@ -481,7 +508,8 @@ async function executeReviewRun(request) {
       status: run.status,
       stdout: run.finalMessage,
       stderr: failures.length ? run.stderr : "",
-      failures
+      failures,
+      notes: buildRecoveryNotes(run)
     },
     { reviewLabel: reviewName, targetLabel: target.label }
   );
@@ -556,7 +584,8 @@ async function executeTaskRun(request) {
     {
       rawOutput,
       failureMessage,
-      failures: run.failures
+      failures: run.failures,
+      notes: buildRecoveryNotes(run)
     },
     {
       title: taskMetadata.title,
@@ -719,7 +748,7 @@ async function executeImageRun(request) {
     rendered: renderImageResult({
       output: payload.output,
       otherImages: images.slice(1).map((image) => image.path),
-      warnings: run.failures,
+      warnings: [...run.failures, ...buildRecoveryNotes(run)],
       response: run.finalMessage
     }),
     summary: `Saved ${output}`,

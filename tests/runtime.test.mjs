@@ -603,3 +603,33 @@ test("image rejects a bad aspect ratio and a missing reference before running", 
   assert.match(missingRef.stderr, /Reference image not found/);
   assert.equal(lastPrintRun(fakeAgyLog), null);
 });
+
+test("a run continued after a refused permission says so and suggests --add-dir", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "denied-once");
+  initGitRepo(repo);
+
+  const result = run("node", [SCRIPT, "run", "read the sibling repository"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Recovered without the refused permission/);
+  assert.match(result.stdout, /Notes:/);
+  assert.match(result.stdout, /continued the same conversation once/);
+});
+
+test("image runs are listed as image, not as a generic run", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "image");
+
+  const image = run("node", [SCRIPT, "image", "a lamp"], { cwd: repo, env: pluginDataEnv(pluginDataDir, binDir) });
+  assert.equal(image.status, 0, image.stderr);
+  const runs = run("node", [SCRIPT, "runs", "--json"], { cwd: repo, env: pluginDataEnv(pluginDataDir, binDir) });
+  assert.equal(JSON.parse(runs.stdout).latestFinished.kindLabel, "image");
+});

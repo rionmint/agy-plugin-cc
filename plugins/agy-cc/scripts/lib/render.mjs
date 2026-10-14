@@ -109,6 +109,16 @@ function appendFailureLines(lines, failures) {
   }
 }
 
+function appendNoteLines(lines, notes) {
+  if (!Array.isArray(notes) || notes.length === 0) {
+    return;
+  }
+  lines.push("", "Notes:");
+  for (const note of notes) {
+    lines.push(`- ${note}`);
+  }
+}
+
 function appendActiveJobsTable(lines, jobs) {
   lines.push("Active runs:");
   lines.push("| Run | Kind | Status | Phase | Elapsed | agy Conversation ID | Summary | Actions |");
@@ -232,6 +242,7 @@ export function renderReviewResult(parsedResult, meta) {
     }
 
     appendFailureLines(lines, meta.failures);
+    appendNoteLines(lines, meta.notes);
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
 
     return `${lines.join("\n").trimEnd()}\n`;
@@ -253,6 +264,7 @@ export function renderReviewResult(parsedResult, meta) {
     }
 
     appendFailureLines(lines, meta.failures);
+    appendNoteLines(lines, meta.notes);
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
 
     return `${lines.join("\n").trimEnd()}\n`;
@@ -292,6 +304,7 @@ export function renderReviewResult(parsedResult, meta) {
   }
 
   appendFailureLines(lines, meta.failures);
+  appendNoteLines(lines, meta.notes);
   appendReasoningSection(lines, meta.reasoningSummary);
 
   return `${lines.join("\n").trimEnd()}\n`;
@@ -317,6 +330,7 @@ export function renderNativeReviewResult(result, meta) {
   }
 
   appendFailureLines(lines, failures);
+  appendNoteLines(lines, result.notes);
 
   if (stderr) {
     lines.push("", "stderr:", "", "```text", stderr, "```");
@@ -330,12 +344,14 @@ export function renderNativeReviewResult(result, meta) {
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput.trimEnd() : "";
   const failures = Array.isArray(parsedResult?.failures) ? parsedResult.failures : [];
-  if (rawOutput && failures.length === 0) {
+  const notes = Array.isArray(parsedResult?.notes) ? parsedResult.notes : [];
+  if (rawOutput && failures.length === 0 && notes.length === 0) {
     return `${rawOutput}\n`;
   }
   if (rawOutput) {
     const lines = [rawOutput];
     appendFailureLines(lines, failures);
+    appendNoteLines(lines, notes);
     return `${lines.join("\n")}\n`;
   }
 
