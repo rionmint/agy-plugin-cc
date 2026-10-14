@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.2 — 2026-10-14
+
+- **`/agy-cc:check` prints one fixed table.** The command used to run the bridge with `--json` and let
+  the model present it, so every session showed it differently (a table in one, an English list in
+  another). The bridge now prints the table itself (the same rows in the same order, model ids grouped
+  by family) and the command only translates its words. Missing values print as `unknown`, and pipes
+  and line breaks cannot break the table.
+- **The hook's data directory wins over the flag.** `--plugin-data` is only read right after the
+  subcommand, so prompt text is never taken for it, a missing value is an error, and an
+  `AGY_CC_PLUGIN_DATA` already exported by the hook is kept: on a host that did not fill
+  `${CLAUDE_PLUGIN_DATA}` into the command text, bash would expand it to another plugin's directory.
+  The SessionEnd hook cleans up the directory the host gave it.
+- **The hook keeps its export file small.** Each write keeps one line per variable and drops the
+  shared `CLAUDE_PLUGIN_DATA` line older versions wrote, so a file grown by repeated resumes shrinks
+  on the next one. Claude Code puts these files into every Bash call's command line; on Windows a
+  long-lived session had passed the 32 KB limit and every Bash call failed with `ENAMETOOLONG`.
+
 ## 0.1.1 — 2026-10-14
 
 - **Uses its own data directory next to other bridge plugins.** In a Bash call `CLAUDE_PLUGIN_DATA` is

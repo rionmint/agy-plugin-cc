@@ -79,7 +79,7 @@ test("the plugin's own data directory wins over a CLAUDE_PLUGIN_DATA another plu
   assert.equal(resolvePluginDataDir({}), null);
 });
 
-test("--plugin-data is taken off the command line wherever it is and becomes AGY_CC_PLUGIN_DATA", () => {
+test("--plugin-data right after the subcommand becomes AGY_CC_PLUGIN_DATA", () => {
   const env = { CLAUDE_PLUGIN_DATA: "/other-plugin" };
   assert.deepEqual(takePluginDataOption(["check", "--plugin-data", "/mine", "--json"], env), ["check", "--json"]);
   assert.equal(env.AGY_CC_PLUGIN_DATA, path.resolve("/mine"));
@@ -778,4 +778,19 @@ test("prepareAgyHome rewrites a file with keys it did not write", () => {
   assert.equal(written.trustedWorkspaces, undefined);
   assert.equal(written.enableTelemetry, undefined);
   assert.equal(settingsMatchProfile(file, "read-only"), true);
+});
+
+test("--plugin-data is only taken right after the subcommand, and the hook's value wins", () => {
+  const separated = {};
+  const prompt = ["run", "--", "explain", "--plugin-data", "/example"];
+  assert.deepEqual(takePluginDataOption(prompt, separated), prompt, "prompt tokens are left alone");
+  assert.equal(separated.AGY_CC_PLUGIN_DATA, undefined);
+  assert.throws(() => takePluginDataOption(["check", "--plugin-data", "--json"], {}), /needs a directory/);
+  assert.throws(() => takePluginDataOption(["check", "--plugin-data"], {}), /needs a directory/);
+  const fromHook = { AGY_CC_PLUGIN_DATA: "/from-hook" };
+  assert.deepEqual(takePluginDataOption(["runs", "--plugin-data", "/other-plugin", "--json"], fromHook), ["runs", "--json"]);
+  assert.equal(fromHook.AGY_CC_PLUGIN_DATA, "/from-hook", "a host that did not fill the flag cannot override the hook");
+  const twice = {};
+  assert.deepEqual(takePluginDataOption(["check", "--plugin-data", "/a", "--plugin-data", "/b"], twice), ["check", "--plugin-data", "/b"]);
+  assert.equal(twice.AGY_CC_PLUGIN_DATA, path.resolve("/a"));
 });

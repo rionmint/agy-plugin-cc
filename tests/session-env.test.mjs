@@ -77,3 +77,19 @@ test("an existing file without a trailing newline does not get a joined line", (
     "export AGY_CC_PLUGIN_DATA='/plugin-data'"
   ]);
 });
+
+test("a file grown by older versions shrinks to one export per variable, without the shared name", () => {
+  const envFile = path.join(makeTempDir(), "sessionstart-hook-1.sh");
+  const grown = [];
+  for (let i = 0; i < 80; i += 1) {
+    grown.push("export CLAUDE_PLUGIN_DATA='/old-shared'", "export AGY_CC_SESSION_ID='session-a'");
+  }
+  fs.writeFileSync(envFile, `${grown.join("\n")}\n`);
+
+  sessionStart(envFile, "session-a");
+
+  assert.deepEqual(lines(envFile), [
+    "export AGY_CC_SESSION_ID='session-a'",
+    "export AGY_CC_PLUGIN_DATA='/plugin-data'"
+  ]);
+});

@@ -137,7 +137,9 @@ test("plugin surfaces use /agy-cc names and the agy bridge", () => {
   assert.match(hooks, /session-lifecycle-hook\.mjs/);
 
   const check = read("commands/check.md");
-  assert.match(check, /agy-bridge\.mjs" check --json/);
+  assert.match(check, /agy-bridge\.mjs" check\r?\n/);
+  assert.match(check, /fixed table/);
+  assert.match(check, /Keep the title, every row, and the row order exactly as printed/);
 
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   for (const command of ["check", "review", "critique", "delegate", "image", "runs", "show", "stop"]) {

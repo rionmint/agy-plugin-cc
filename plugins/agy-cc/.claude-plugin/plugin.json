@@ -1,6 +1,6 @@
 {
   "name": "agy-cc",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Antigravity CLI (agy) <-> Claude Code bridge for review, critique, delegation, and image generation.",
   "author": {
     "name": "rionmint"

@@ -35,11 +35,12 @@ function appendEnvVar(name, value) {
     return;
   }
   // SessionStart fires again on every resume and compaction, and the host
-  // inlines this file into every Bash call. Appending the same export each time
-  // grows it until the command line overflows (Git Bash cuts `bash -c` at 8192
-  // bytes), so skip the write when the variable's last export already carries
-  // this value. Comparing against the last export, not any earlier one, keeps
-  // A -> B -> A ending on A.
+  // inlines this file into every Bash call. On Windows the whole command line
+  // tops out near 32 KB, and a long-lived session whose hooks appended the same
+  // exports on every resume (as versions before this fix did) ends with every
+  // Bash call failing with ENAMETOOLONG. The file is this hook's own, so each
+  // write keeps only the last export of every variable: the result is the same
+  // environment, and an already-grown file shrinks back on the next resume.
   const envFile = process.env.CLAUDE_ENV_FILE;
   const line = `export ${name}=${shellEscape(text)}`;
   let current = "";
@@ -50,16 +51,26 @@ function appendEnvVar(name, value) {
       throw error;
     }
   }
-  const prefix = `export ${name}=`;
-  const lastExport = current
-    .split(/\r?\n/)
-    .filter((entry) => entry.startsWith(prefix))
-    .pop();
-  if (lastExport === line) {
-    return;
+  const entries = current.split(/\r?\n/).filter((entry) => entry !== "");
+  entries.push(line);
+  const exportedName = (entry) => /^export ([A-Za-z_][A-Za-z0-9_]*)=/.exec(entry)?.[1] ?? null;
+  const lastIndex = new Map();
+  entries.forEach((entry, index) => {
+    const variable = exportedName(entry);
+    if (variable) {
+      lastIndex.set(variable, index);
+    }
+  });
+  // Older versions of this hook also exported the shared CLAUDE_PLUGIN_DATA,
+  // which hands this plugin's directory to every other plugin; those lines go.
+  const kept = entries.filter((entry, index) => {
+    const variable = exportedName(entry);
+    return variable === null || (variable !== PLUGIN_DATA_ENV && lastIndex.get(variable) === index);
+  });
+  const next = `${kept.join("\n")}\n`;
+  if (next !== current) {
+    fs.writeFileSync(envFile, next, "utf8");
   }
-  const separator = current === "" || current.endsWith("\n") ? "" : "\n";
-  fs.appendFileSync(envFile, `${separator}${line}\n`, "utf8");
 }
 
 function cleanupSessionJobs(cwd, sessionId) {
@@ -124,6 +135,11 @@ async function handleSessionEnd(input) {
 }
 
 async function main() {
+  // A hook process gets this plugin's own CLAUDE_PLUGIN_DATA from the host;
+  // make it the directory the cleanup below reads, whatever else is inherited.
+  if (process.env[PLUGIN_DATA_ENV]) {
+    process.env[PLUGIN_DATA_OVERRIDE_ENV] = process.env[PLUGIN_DATA_ENV];
+  }
   const input = readHookInput();
   const eventName = process.argv[2] ?? input.hook_event_name ?? "";
 

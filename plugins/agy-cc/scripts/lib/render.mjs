@@ -246,27 +246,70 @@ function appendReasoningSection(lines, reasoningSummary) {
   }
 }
 
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+
+/** `gemini-3.8-flash-low`, `gemini-3.8-flash-high` become `gemini-3.8-flash low/high`. */
+export function groupModelIds(models = []) {
+  const families = new Map();
+  for (const id of models) {
+    const match = /^(.+)-(low|medium|high|xhigh|max)$/.exec(String(id));
+    const family = match ? match[1] : String(id);
+    if (!families.has(family)) {
+      families.set(family, []);
+    }
+    if (match) {
+      families.get(family).push(match[2]);
+    }
+  }
+  return [...families]
+    .map(([family, levels]) => {
+      const sorted = [...new Set(levels)].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
+      return sorted.length > 0 ? `${family} ${sorted.join("/")}` : family;
+    })
+    .join(" · ");
+}
+
+function tableCell(value) {
+  const text = value === undefined || value === null || value === "" ? "unknown" : String(value);
+  return text.replace(/\r\n|\r|\n/g, " ").replace(/\|/g, "\\|");
+}
+
+function statusOf(part) {
+  return part && typeof part === "object" ? part : {};
+}
+
+/**
+ * The check is printed as one fixed table so every session shows the same
+ * rows in the same order; the command only translates it.
+ */
 export function renderSetupReport(report) {
-  const lines = [
-    "# agy Check",
-    "",
-    `Status: ${report.ready ? "ready" : "needs attention"}`,
-    "",
-    "Checks:",
-    `- node: ${report.node.detail}`,
-    `- agy: ${report.agy.detail}`,
-    `- auth: ${report.auth.detail}`,
-    `- plugin agy home: ${report.agyHome}`,
-    `- session runtime: ${report.sessionRuntime.label}`,
-    ""
+  const node = statusOf(report.node);
+  const agy = statusOf(report.agy);
+  const auth = statusOf(report.auth);
+  const models = Array.isArray(auth.models) ? auth.models : [];
+  const rows = [
+    ["Node", node.available ? node.detail : `not found (${node.detail ?? "unknown"})`],
+    ["agy", agy.available ? `${agy.detail ?? "unknown"} (\`${agy.binary ?? "agy"}\`)` : `not found (${agy.detail ?? "unknown"})`],
+    ["Sign-in", auth.loggedIn ? `signed in, ${models.length} models` : `not signed in (${auth.detail ?? "unknown"})`],
+    ["Models", models.length > 0 ? groupModelIds(models) : "none listed"],
+    [
+      "Your toolPermission",
+      report.userToolPermission ? `${report.userToolPermission} (bridge runs do not use it)` : "not set (bridge runs do not use it)"
+    ],
+    ["Plugin agy home", report.agyHome],
+    ["Runs", "started and tracked by the plugin (PID + log files)"]
   ];
 
-  if (report.userToolPermission) {
-    lines.push(
-      `Your own agy setting toolPermission=${report.userToolPermission} is not used: every bridge run starts agy in the plugin home above with its own permission profile.`,
-      ""
-    );
-  }
+  const lines = [
+    `## agy check: ${report.ready ? "ready" : "needs attention"}`,
+    "",
+    "| Item | Status |",
+    "|---|---|",
+    ...rows.map(([label, value]) => `| ${label} | ${tableCell(value)} |`),
+    "",
+    "Bridge runs never use your global agy settings: each run starts agy in the plugin agy home above with its own permission profile.",
+    ""
+  ];
 
   if (report.actionsTaken?.length > 0) {
     lines.push("Actions taken:");
@@ -281,6 +324,8 @@ export function renderSetupReport(report) {
     for (const step of report.nextSteps) {
       lines.push(`- ${step}`);
     }
+  } else {
+    lines.push("Next steps: none.");
   }
 
   return `${lines.join("\n").trimEnd()}\n`;

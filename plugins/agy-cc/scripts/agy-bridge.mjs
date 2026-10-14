@@ -1341,31 +1341,41 @@ async function handleCancel(argv) {
 }
 
 /**
- * `--plugin-data <dir>` may appear anywhere on the command line. The commands
- * fill it from Claude Code's `${CLAUDE_PLUGIN_DATA}`, which is this plugin's
- * own directory there; the environment variable of that name in a Bash call
- * can be another plugin's. It is moved into `AGY_CC_PLUGIN_DATA` so that the
- * state, the agy homes and a background worker all use it.
+ * `--plugin-data <dir>`, accepted only right after the subcommand (where the
+ * commands put it), so prompt text and other options are never taken for it.
+ * The commands fill it from Claude Code's `${CLAUDE_PLUGIN_DATA}`, which is
+ * this plugin's own directory there; the environment variable of that name in
+ * a Bash call can be another plugin's.
+ *
+ * A `AGY_CC_PLUGIN_DATA` already in the environment wins: this plugin's own
+ * SessionStart hook exports it from the host's value, which is right even on a
+ * host that does not fill `${CLAUDE_PLUGIN_DATA}` into command text (there
+ * bash would expand it to whatever another plugin exported). The flag covers
+ * sessions where the hook has not run, such as right after installing. Either
+ * way the value ends up in `AGY_CC_PLUGIN_DATA`, so the state, the agy homes and a
+ * background worker all use it.
  */
 export function takePluginDataOption(args, env = process.env) {
-  const rest = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const token = args[index];
-    let value = null;
-    if (token === "--plugin-data") {
-      value = args[index + 1] ?? "";
-      index += 1;
-    } else if (token.startsWith("--plugin-data=")) {
-      value = token.slice("--plugin-data=".length);
-    } else {
-      rest.push(token);
-      continue;
-    }
-    if (value.trim()) {
-      env[PLUGIN_DATA_OVERRIDE_ENV] = path.resolve(value.trim());
-    }
+  const [subcommand, ...rest] = args;
+  if (subcommand === undefined) {
+    return [];
   }
-  return rest;
+  let value = null;
+  if (rest[0] === "--plugin-data") {
+    value = rest[1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error("--plugin-data needs a directory.");
+    }
+    rest.splice(0, 2);
+  } else if (typeof rest[0] === "string" && rest[0].startsWith("--plugin-data=")) {
+    value = rest[0].slice("--plugin-data=".length);
+    rest.splice(0, 1);
+  }
+  const current = env[PLUGIN_DATA_OVERRIDE_ENV];
+  if (value !== null && value.trim() && !(current && String(current).trim())) {
+    env[PLUGIN_DATA_OVERRIDE_ENV] = path.resolve(value.trim());
+  }
+  return [subcommand, ...rest];
 }
 
 async function main() {

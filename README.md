@@ -182,9 +182,15 @@ cd <repository> && agy -p=<prompt> --output-format stream-json --print-timeout 3
 Why a variable of its own: Claude Code gives each plugin its own `CLAUDE_PLUGIN_DATA` in hooks and in
 command text, but not in Bash calls. There the variable is whatever a plugin's SessionStart hook last
 exported into the session — with several bridge plugins installed (Codex, Grok, Cursor), usually
-another plugin's directory. So the commands pass `--plugin-data "${CLAUDE_PLUGIN_DATA}"`, which Claude
-Code fills in from the command text, and the hook exports `AGY_CC_PLUGIN_DATA` rather than the shared
-name.
+another plugin's directory. So the hook exports `AGY_CC_PLUGIN_DATA` rather than the shared name, and
+the commands also pass `--plugin-data "${CLAUDE_PLUGIN_DATA}"` right after the subcommand, which
+Claude Code fills in from the command text. The hook's value wins; the flag is used when the hook has
+not run in the session (right after installing the plugin, for example).
+
+The same hook keeps its own export file to one line per variable. Claude Code puts these files into
+every Bash call's command line, and a long-lived session whose hooks append the same lines on every
+resume can push that line past the Windows limit (about 32 KB), after which every Bash call fails with
+`ENAMETOOLONG`.
 
 ---
 

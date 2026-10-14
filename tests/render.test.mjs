@@ -2,12 +2,61 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  groupModelIds,
   renderImageResult,
   renderNativeReviewResult,
   renderReviewResult,
+  renderSetupReport,
   renderStoredJobResult,
   renderTaskResult
 } from "../plugins/agy-cc/scripts/lib/render.mjs";
+
+function checkReport(overrides = {}) {
+  return {
+    ready: true,
+    node: { available: true, detail: "v24.13.1" },
+    agy: { available: true, detail: "1.3.5", binary: "agy" },
+    auth: { loggedIn: true, detail: "signed in; 3 models available", models: ["m-high", "m-low", "other-medium"] },
+    agyHome: "C:\\data\\agy-cc\\agy-homes",
+    userToolPermission: "always-proceed",
+    actionsTaken: [],
+    nextSteps: [],
+    ...overrides
+  };
+}
+
+test("the check is one fixed table with the same rows in the same order", () => {
+  const output = renderSetupReport(checkReport());
+  const labels = [...output.matchAll(/^\| ([^|]+) \|/gm)].map((match) => match[1].trim());
+  assert.deepEqual(labels, ["Item", "Node", "agy", "Sign-in", "Models", "Your toolPermission", "Plugin agy home", "Runs"]);
+  assert.match(output, /^## agy check: ready$/m);
+  assert.match(output, /\| Models \| m low\/high · other medium \|/);
+  assert.match(output, /never use your global agy settings/);
+  assert.match(output, /Next steps: none\./);
+});
+
+test("a check that is not ready keeps its next steps and says what is missing", () => {
+  const output = renderSetupReport(
+    checkReport({
+      ready: false,
+      auth: { loggedIn: false, detail: "Please sign in", models: [] },
+      nextSteps: ["Run `agy` once in a terminal and complete the Google sign-in it asks for."]
+    })
+  );
+  assert.match(output, /^## agy check: needs attention$/m);
+  assert.match(output, /\| Sign-in \| not signed in \(Please sign in\) \|/);
+  assert.match(output, /\| Models \| none listed \|/);
+  const labels = [...output.matchAll(/^\| ([^|]+) \|/gm)].map((match) => match[1].trim());
+  assert.deepEqual(labels, ["Item", "Node", "agy", "Sign-in", "Models", "Your toolPermission", "Plugin agy home", "Runs"]);
+  assert.match(output, /- Run `agy` once in a terminal/);
+});
+
+test("model ids are grouped by family with efforts in order", () => {
+  assert.equal(
+    groupModelIds(["gemini-4-argon-medium", "gemini-4-argon-high", "gemini-4-argon-low", "gpt-oss-120b-medium", "plain"]),
+    "gemini-4-argon low/medium/high · gpt-oss-120b medium · plain"
+  );
+});
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {
   const output = renderReviewResult(
@@ -137,4 +186,11 @@ test("review validation follows the schema exactly", async () => {
   assert.match(validateReviewResultShape({ ...good, findings: [{ ...finding, confidence: 2 }] }), /confidence/);
   assert.match(validateReviewResultShape({ ...good, findings: [{ ...finding, line_end: 0 }] }), /line_end/);
   assert.match(validateReviewResultShape({ ...good, next_steps: [42] }), /next_steps\[0\]/);
+});
+
+test("table cells survive missing fields, pipes and every kind of line break", () => {
+  const output = renderSetupReport({ ready: false, node: null, auth: { loggedIn: false, detail: "a|b\rc\r\nd\ne" } });
+  assert.doesNotMatch(output, /undefined/);
+  assert.match(output, /not signed in \(a\\\|b c d e\)/);
+  assert.match(output, /\| Node \| not found \(unknown\) \|/);
 });
