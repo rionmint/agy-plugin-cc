@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { collectReviewContext, resolveReviewTarget } from "../plugins/cursor-cc/scripts/lib/git.mjs";
+import { collectReviewContext, resolveReviewTarget } from "../plugins/agy-cc/scripts/lib/git.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 
 // Untracked file bodies are inlined into the prompt that goes to the agent, so
@@ -24,7 +24,7 @@ function reviewText(repo) {
 }
 
 function canSymlink() {
-  const probe = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-cc-symlink-probe-"));
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cc-symlink-probe-"));
   const target = path.join(probe, "target.txt");
   fs.writeFileSync(target, "probe");
   try {

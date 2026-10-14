@@ -19,7 +19,7 @@ const TARGETS = [
     ]
   },
   {
-    file: "plugins/cursor-cc/.claude-plugin/plugin.json",
+    file: "plugins/agy-cc/.claude-plugin/plugin.json",
     values: [
       {
         label: "version",
@@ -42,7 +42,7 @@ const TARGETS = [
         }
       },
       {
-        label: "plugins[cursor-cc].version",
+        label: "plugins[agy-cc].version",
         get: (json) => findMarketplacePlugin(json).version,
         set: (json, version) => {
           findMarketplacePlugin(json).version = version;
@@ -112,8 +112,8 @@ function requireObject(value, label) {
 }
 
 function findMarketplacePlugin(json) {
-  const plugin = json.plugins?.find((entry) => entry?.name === "cursor-cc");
-  requireObject(plugin, ".claude-plugin/marketplace.json plugins[cursor-cc]");
+  const plugin = json.plugins?.find((entry) => entry?.name === "agy-cc");
+  requireObject(plugin, ".claude-plugin/marketplace.json plugins[agy-cc]");
   return plugin;
 }
 

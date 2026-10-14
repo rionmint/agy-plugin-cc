@@ -1,9 +1,9 @@
 {
-  "name": "cursor-plugin-cc",
-  "version": "0.2.4",
+  "name": "agy-plugin-cc",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Cursor CLI <-> Claude Code bridge for review, critique, and delegation.",
+  "description": "Antigravity CLI (agy) <-> Claude Code bridge for review, critique, delegation, and image generation.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.18.0"

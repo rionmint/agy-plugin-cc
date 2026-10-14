@@ -1,0 +1,11 @@
+{
+  "name": "agy-cc",
+  "version": "0.1.0",
+  "description": "Antigravity CLI (agy) <-> Claude Code bridge for review, critique, delegation, and image generation.",
+  "author": {
+    "name": "rionmint"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/rionmint/agy-plugin-cc",
+  "repository": "https://github.com/rionmint/agy-plugin-cc"
+}

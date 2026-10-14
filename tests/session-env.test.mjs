@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { makeTempDir, run } from "./helpers.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const HOOK = path.join(ROOT, "plugins", "cursor-cc", "scripts", "session-lifecycle-hook.mjs");
+const HOOK = path.join(ROOT, "plugins", "agy-cc", "scripts", "session-lifecycle-hook.mjs");
 
 function sessionStart(envFile, sessionId, pluginData = "/plugin-data") {
   const result = run(process.execPath, [HOOK, "SessionStart"], {
@@ -37,7 +37,7 @@ test("SessionStart repeated on resume and compaction writes each export once", (
   }
 
   assert.deepEqual(lines(envFile), [
-    "export CURSOR_CC_SESSION_ID='session-a'",
+    "export AGY_CC_SESSION_ID='session-a'",
     "export CLAUDE_PLUGIN_DATA='/plugin-data'"
   ]);
 });
@@ -49,7 +49,7 @@ test("a value that changes and changes back still ends on the latest value", () 
   sessionStart(envFile, "session-b");
   sessionStart(envFile, "session-a");
 
-  assert.equal(lastExport(envFile, "CURSOR_CC_SESSION_ID"), "export CURSOR_CC_SESSION_ID='session-a'");
+  assert.equal(lastExport(envFile, "AGY_CC_SESSION_ID"), "export AGY_CC_SESSION_ID='session-a'");
   assert.equal(lines(envFile).filter((line) => line.startsWith("export CLAUDE_PLUGIN_DATA=")).length, 1);
 });
 
@@ -57,7 +57,7 @@ test("CRLF line endings are recognised as the same export", () => {
   const envFile = path.join(makeTempDir(), "sessionstart-hook-2.sh");
   fs.writeFileSync(
     envFile,
-    "export CURSOR_CC_SESSION_ID='session-a'\r\nexport CLAUDE_PLUGIN_DATA='/plugin-data'\r\n"
+    "export AGY_CC_SESSION_ID='session-a'\r\nexport CLAUDE_PLUGIN_DATA='/plugin-data'\r\n"
   );
 
   sessionStart(envFile, "session-a");
@@ -73,7 +73,7 @@ test("an existing file without a trailing newline does not get a joined line", (
 
   assert.deepEqual(lines(envFile), [
     "export OTHER='x'",
-    "export CURSOR_CC_SESSION_ID='session-a'",
+    "export AGY_CC_SESSION_ID='session-a'",
     "export CLAUDE_PLUGIN_DATA='/plugin-data'"
   ]);
 });

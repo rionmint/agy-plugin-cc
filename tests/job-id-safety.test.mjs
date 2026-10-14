@@ -9,9 +9,9 @@ import {
   resolveJobFile,
   resolveJobLogFile,
   resolveJobsDir
-} from "../plugins/cursor-cc/scripts/lib/state.mjs";
+} from "../plugins/agy-cc/scripts/lib/state.mjs";
 
-// Run ids arrive from slash-command arguments (`/cursor-cc:show <run-id>`), so
+// Run ids arrive from slash-command arguments (`/agy-cc:show <run-id>`), so
 // they are user input that becomes a path component.
 const TRAVERSAL_IDS = [
   "../../outside",

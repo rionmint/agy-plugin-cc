@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runCommand, terminateProcessTree } from "../plugins/cursor-cc/scripts/lib/process.mjs";
+import { runCommand, terminateProcessTree } from "../plugins/agy-cc/scripts/lib/process.mjs";
 
 test("terminateProcessTree uses taskkill on Windows", () => {
   let captured = null;

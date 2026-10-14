@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { buildEnv, installFakeCursor } from "./fake-cursor-fixture.mjs";
+import { buildEnv, installFakeAgy, lastPrintRun } from "./fake-agy-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import {
   generateJobId,
@@ -13,11 +13,11 @@ import {
   resolveStateDir,
   upsertJob,
   writeJobFile
-} from "../plugins/cursor-cc/scripts/lib/state.mjs";
+} from "../plugins/agy-cc/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PLUGIN_ROOT = path.join(ROOT, "plugins", "cursor-cc");
-const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "cursor-bridge.mjs");
+const PLUGIN_ROOT = path.join(ROOT, "plugins", "agy-cc");
+const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "agy-bridge.mjs");
 
 function pluginDataEnv(pluginDataDir, binDir, extra = {}) {
   return buildEnv(binDir, {
@@ -26,10 +26,10 @@ function pluginDataEnv(pluginDataDir, binDir, extra = {}) {
   });
 }
 
-test("check reports ready when fake cursor-agent is installed and authenticated", () => {
+test("check reports ready when fake agy is installed and signed in", () => {
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
 
   const result = run("node", [SCRIPT, "check", "--json"], {
     cwd: ROOT,
@@ -39,16 +39,17 @@ test("check reports ready when fake cursor-agent is installed and authenticated"
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ready, true);
-  assert.equal(payload.cursor.available, true);
+  assert.equal(payload.agy.available, true);
+  assert.match(payload.agyHome, /agy-home$/);
   assert.equal(payload.auth.loggedIn, true);
   assert.equal(payload.sessionRuntime.mode, "plugin-owned");
   assert.equal(payload.reviewGateEnabled, undefined);
 });
 
-test("check reports not ready when the status probe says not logged in", () => {
+test("check reports not ready when agy models says to sign in", () => {
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir, "not-logged-in");
+  installFakeAgy(binDir, "not-logged-in");
 
   const result = run("node", [SCRIPT, "check", "--json"], {
     cwd: ROOT,
@@ -65,7 +66,7 @@ test("check reports not ready when the status probe says not logged in", () => {
 test("check ignores legacy review-gate flags as unknown options", () => {
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
 
   const result = run("node", [SCRIPT, "check", "--enable-review-gate", "--json"], {
     cwd: ROOT,
@@ -79,11 +80,11 @@ test("check ignores legacy review-gate flags as unknown options", () => {
   assert.match(result.stderr, /ignoring unknown option/);
 });
 
-test("review renders a no-findings style result from fake cursor-agent", () => {
+test("review renders a no-findings style result from fake agy", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
   initGitRepo(repo);
   fs.mkdirSync(path.join(repo, "src"));
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 1;\n");
@@ -98,14 +99,15 @@ test("review renders a no-findings style result from fake cursor-agent", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Reviewed uncommitted changes|No material issues found/i);
-  assert.match(result.stdout, /Cursor Review|Target:/);
+  assert.match(result.stdout, /# agy Review/);
+  assert.match(result.stdout, /Target:/);
 });
 
 test("critique returns structured findings payload path", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -128,62 +130,56 @@ function setupReviewableRepo() {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  const fakeCursorLog = path.join(pluginDataDir, "fake-cursor.log");
-  installFakeCursor(binDir);
+  const fakeAgyLog = path.join(pluginDataDir, "fake-agy.log");
+  installFakeAgy(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n");
   run("git", ["add", "src.js"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "src.js"), "export const value = 2;\n");
-  return { repo, binDir, pluginDataDir, fakeCursorLog };
+  return { repo, binDir, pluginDataDir, fakeAgyLog };
 }
 
-function lastFakeCursorArgv(logPath) {
-  const lines = fs
-    .readFileSync(logPath, "utf8")
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-  const printRun = [...lines].reverse().find((entry) => entry.argv?.includes("--print"));
-  assert.ok(printRun, "expected a headless cursor-agent -p invocation");
-  return printRun.argv;
+function lastFakeAgyArgv(logPath) {
+  const entry = lastPrintRun(logPath);
+  assert.ok(entry, "expected a headless agy -p= invocation");
+  return entry.argv;
 }
 
-test("review forwards --model and --mode to cursor-agent", () => {
-  const { repo, binDir, pluginDataDir, fakeCursorLog } = setupReviewableRepo();
+test("review forwards --model and --mode to agy", () => {
+  const { repo, binDir, pluginDataDir, fakeAgyLog } = setupReviewableRepo();
 
   const result = run(
     "node",
     [SCRIPT, "review", "--model", "auto", "--mode", "plan"],
     {
       cwd: repo,
-      env: pluginDataEnv(pluginDataDir, binDir, { FAKE_CURSOR_LOG: fakeCursorLog })
+      env: pluginDataEnv(pluginDataDir, binDir, { FAKE_AGY_LOG: fakeAgyLog })
     }
   );
 
   assert.equal(result.status, 0, result.stderr);
-  const argv = lastFakeCursorArgv(fakeCursorLog);
+  const argv = lastFakeAgyArgv(fakeAgyLog);
   assert.ok(argv.includes("--model"));
   assert.equal(argv[argv.indexOf("--model") + 1], "auto");
   assert.ok(argv.includes("--mode"));
   assert.equal(argv[argv.indexOf("--mode") + 1], "plan");
 });
 
-test("critique forwards --model and --mode to cursor-agent", () => {
-  const { repo, binDir, pluginDataDir, fakeCursorLog } = setupReviewableRepo();
+test("critique forwards --model and --mode to agy", () => {
+  const { repo, binDir, pluginDataDir, fakeAgyLog } = setupReviewableRepo();
 
   const result = run(
     "node",
     [SCRIPT, "critique", "--model", "auto", "--mode", "plan", "focus on race conditions"],
     {
       cwd: repo,
-      env: pluginDataEnv(pluginDataDir, binDir, { FAKE_CURSOR_LOG: fakeCursorLog })
+      env: pluginDataEnv(pluginDataDir, binDir, { FAKE_AGY_LOG: fakeAgyLog })
     }
   );
 
   assert.equal(result.status, 0, result.stderr);
-  const argv = lastFakeCursorArgv(fakeCursorLog);
+  const argv = lastFakeAgyArgv(fakeAgyLog);
   assert.ok(argv.includes("--model"));
   assert.equal(argv[argv.indexOf("--model") + 1], "auto");
   assert.ok(argv.includes("--mode"));
@@ -193,7 +189,7 @@ test("critique forwards --model and --mode to cursor-agent", () => {
 test("review rejects unsupported --mode values", () => {
   const { repo, binDir, pluginDataDir } = setupReviewableRepo();
 
-  for (const mode of ["agent", "yolo", "write"]) {
+  for (const mode of ["accept-edits", "yolo", "write"]) {
     const result = run("node", [SCRIPT, "review", "--mode", mode], {
       cwd: repo,
       env: pluginDataEnv(pluginDataDir, binDir)
@@ -204,11 +200,11 @@ test("review rejects unsupported --mode values", () => {
   }
 });
 
-test("run delegates through fake cursor-agent and stores a finished job", () => {
+test("run delegates through fake agy and stores a finished job", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -242,7 +238,7 @@ test("runs and show surface the latest finished run", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
   run("git", ["add", "a.txt"], { cwd: repo });
@@ -269,7 +265,8 @@ test("runs and show surface the latest finished run", () => {
     env: pluginDataEnv(pluginDataDir, binDir)
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Handled the requested task|Cursor session ID|Run:/);
+  assert.match(result.stdout, /Handled the requested task/);
+  assert.match(result.stdout, /agy conversation ID: /);
 });
 
 function processAlive(pid) {
@@ -291,7 +288,7 @@ test("stop terminates a tracked sleeper process and marks run cancelled", () => 
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
   run("git", ["add", "a.txt"], { cwd: repo });
@@ -300,9 +297,10 @@ test("stop terminates a tracked sleeper process and marks run cancelled", () => 
   // Stopping a run verifies that the pid still looks like something this plugin
   // started before signalling it, so the stand-ins have to carry a matching
   // command line rather than being anonymous `node -e` processes.
-  const agentStub = path.join(repo, "cursor-agent-stub.mjs");
-  const bridgeStub = path.join(repo, "cursor-bridge.mjs.stub.mjs");
+  const agentStub = path.join(repo, "agy-stub-bin/agy");
+  const bridgeStub = path.join(repo, "agy-bridge.mjs.stub.mjs");
   const stubSource = "setInterval(() => {}, 1000);";
+  fs.mkdirSync(path.dirname(agentStub), { recursive: true });
   fs.writeFileSync(agentStub, stubSource, "utf8");
   fs.writeFileSync(bridgeStub, stubSource, "utf8");
 
@@ -333,7 +331,7 @@ test("stop terminates a tracked sleeper process and marks run cancelled", () => 
       id: jobId,
       kind: "task",
       kindLabel: "delegate",
-      title: "Cursor Delegate",
+      title: "agy Delegate",
       workspaceRoot: repo,
       jobClass: "task",
       summary: "fake running",
@@ -390,7 +388,7 @@ test("stop terminates a tracked sleeper process and marks run cancelled", () => 
 });
 
 test("enqueueBackgroundJob writes the job file before spawning the worker", async () => {
-  const { enqueueBackgroundJob } = await import("../plugins/cursor-cc/scripts/cursor-bridge.mjs");
+  const { enqueueBackgroundJob } = await import("../plugins/agy-cc/scripts/agy-bridge.mjs");
   const repo = makeTempDir();
   const pluginDataDir = makeTempDir();
   const previous = process.env.CLAUDE_PLUGIN_DATA;
@@ -402,7 +400,7 @@ test("enqueueBackgroundJob writes the job file before spawning the worker", asyn
       id: generateJobId("run"),
       kind: "task",
       kindLabel: "delegate",
-      title: "Cursor Delegate",
+      title: "agy Delegate",
       workspaceRoot: repo,
       jobClass: "task",
       summary: "bg order",
@@ -453,7 +451,7 @@ test("run-resume-candidate reports available after a completed run with thread i
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const pluginDataDir = makeTempDir();
-  installFakeCursor(binDir);
+  installFakeAgy(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "a.txt"), "a\n");
   run("git", ["add", "a.txt"], { cwd: repo });
@@ -463,7 +461,7 @@ test("run-resume-candidate reports available after a completed run with thread i
   const task = run("node", [SCRIPT, "run", "first task"], {
     cwd: repo,
     env: pluginDataEnv(pluginDataDir, binDir, {
-      CURSOR_CC_SESSION_ID: sessionId
+      AGY_CC_SESSION_ID: sessionId
     })
   });
   assert.equal(task.status, 0, task.stderr);
@@ -471,11 +469,137 @@ test("run-resume-candidate reports available after a completed run with thread i
   const candidate = run("node", [SCRIPT, "run-resume-candidate", "--json"], {
     cwd: repo,
     env: pluginDataEnv(pluginDataDir, binDir, {
-      CURSOR_CC_SESSION_ID: sessionId
+      AGY_CC_SESSION_ID: sessionId
     })
   });
   assert.equal(candidate.status, 0, candidate.stderr);
   const payload = JSON.parse(candidate.stdout);
   assert.equal(payload.available, true);
   assert.ok(payload.candidate?.threadId);
+});
+
+test("a failed agy run marks the job failed and says why", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "timeout");
+  initGitRepo(repo);
+
+  const result = run("node", [SCRIPT, "run", "count to a million"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /agy run problems:/);
+  assert.match(result.stdout, /--print-timeout/);
+
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
+  try {
+    assert.equal(listJobs(repo)[0].status, "failed");
+  } finally {
+    if (previous == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previous;
+    }
+  }
+});
+
+test("a long review goes through a prompt file that is cleaned up afterwards", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  const fakeAgyLog = path.join(pluginDataDir, "fake-agy.log");
+  installFakeAgy(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "big.txt"), "a\n");
+  run("git", ["add", "big.txt"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "big.txt"), "changed line\n".repeat(3000));
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir, { FAKE_AGY_LOG: fakeAgyLog })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const entry = lastPrintRun(fakeAgyLog);
+  assert.ok(entry.promptFile, "the prompt went through a file");
+  assert.match(entry.prompt, /changed line/);
+  assert.equal(fs.existsSync(entry.promptFile), false, "the prompt file was removed after the run");
+});
+
+test("image copies the drawn picture out of agy's conversation folder", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "image");
+
+  const out = path.join(repo, "robot.png");
+  const result = run("node", [SCRIPT, "image", "--out", out, "--aspect", "1:1", "--json", "a small robot"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  // The fake draws JPEG, so the .png name is corrected rather than kept.
+  assert.equal(payload.output.path, path.join(repo, "robot.jpg"));
+  assert.equal(payload.output.type, "jpeg");
+  const bytes = fs.readFileSync(payload.output.path);
+  assert.deepEqual([...bytes.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+  assert.match(payload.output.source, /brain/);
+});
+
+test("image never overwrites an existing file", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "image");
+  const out = path.join(repo, "pic.jpg");
+  fs.writeFileSync(out, "keep me");
+
+  const result = run("node", [SCRIPT, "image", "--out", out, "--json", "a cat"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(out, "utf8"), "keep me");
+  assert.equal(JSON.parse(result.stdout).output.path, path.join(repo, "pic-2.jpg"));
+});
+
+test("image fails clearly when agy drew nothing", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  installFakeAgy(binDir, "no-image");
+
+  const result = run("node", [SCRIPT, "image", "a dog"], {
+    cwd: repo,
+    env: pluginDataEnv(pluginDataDir, binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /No image was produced/);
+});
+
+test("image rejects a bad aspect ratio and a missing reference before running", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  const fakeAgyLog = path.join(pluginDataDir, "fake-agy.log");
+  installFakeAgy(binDir, "image");
+  const env = pluginDataEnv(pluginDataDir, binDir, { FAKE_AGY_LOG: fakeAgyLog });
+
+  const badAspect = run("node", [SCRIPT, "image", "--aspect", "wide", "x"], { cwd: repo, env });
+  assert.notEqual(badAspect.status, 0);
+  assert.match(badAspect.stderr, /Unsupported aspect ratio/);
+
+  const missingRef = run("node", [SCRIPT, "image", "--ref", path.join(repo, "none.jpg"), "x"], { cwd: repo, env });
+  assert.notEqual(missingRef.status, 0);
+  assert.match(missingRef.stderr, /Reference image not found/);
+  assert.equal(lastPrintRun(fakeAgyLog), null);
 });

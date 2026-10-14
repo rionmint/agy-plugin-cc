@@ -1,0 +1,166 @@
+export function parseArgs(argv, config = {}) {
+  // A multi option takes a value like a value option, but may repeat; its
+  // values are collected into an array in the order given.
+  const multiOptions = new Set(config.multiOptions ?? []);
+  const valueOptions = new Set([...(config.valueOptions ?? []), ...multiOptions]);
+  const booleanOptions = new Set(config.booleanOptions ?? []);
+  const setValue = (options, key, value) => {
+    if (multiOptions.has(key)) {
+      options[key] = [...(options[key] ?? []), value];
+    } else {
+      options[key] = value;
+    }
+  };
+  const aliasMap = config.aliasMap ?? {};
+  const unknownMode = config.unknownMode ?? "positional";
+  const options = {};
+  const positionals = [];
+  const unknown = [];
+  let passthrough = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+
+    if (passthrough) {
+      positionals.push(token);
+      continue;
+    }
+
+    if (token === "--") {
+      passthrough = true;
+      continue;
+    }
+
+    if (!token.startsWith("-") || token === "-") {
+      positionals.push(token);
+      continue;
+    }
+
+    if (token.startsWith("--")) {
+      const [rawKey, inlineValue] = token.slice(2).split("=", 2);
+      const key = aliasMap[rawKey] ?? rawKey;
+
+      if (booleanOptions.has(key)) {
+        options[key] = inlineValue === undefined ? true : inlineValue !== "false";
+        continue;
+      }
+
+      if (valueOptions.has(key)) {
+        const nextValue = inlineValue ?? argv[index + 1];
+        if (nextValue === undefined) {
+          throw new Error(`Missing value for --${rawKey}`);
+        }
+        setValue(options, key, nextValue);
+        if (inlineValue === undefined) {
+          index += 1;
+        }
+        continue;
+      }
+
+      if (unknownMode === "error") {
+        throw new Error(`Unknown option --${rawKey}`);
+      }
+      if (unknownMode === "warn") {
+        unknown.push(token);
+        continue;
+      }
+      positionals.push(token);
+      continue;
+    }
+
+    const shortKey = token.slice(1);
+    const key = aliasMap[shortKey] ?? shortKey;
+
+    if (booleanOptions.has(key)) {
+      options[key] = true;
+      continue;
+    }
+
+    if (valueOptions.has(key)) {
+      const nextValue = argv[index + 1];
+      if (nextValue === undefined) {
+        throw new Error(`Missing value for -${shortKey}`);
+      }
+      setValue(options, key, nextValue);
+      index += 1;
+      continue;
+    }
+
+    if (unknownMode === "error") {
+      throw new Error(`Unknown option -${shortKey}`);
+    }
+    if (unknownMode === "warn") {
+      unknown.push(token);
+      continue;
+    }
+    positionals.push(token);
+  }
+
+  return { options, positionals, unknown };
+}
+
+export function splitRawArgumentString(raw) {
+  const tokens = [];
+  let current = "";
+  let quote = null;
+  let escaping = false;
+  let pendingBackslash = false;
+
+  for (const character of raw) {
+    if (escaping) {
+      // A backslash escapes a quote, whitespace, or another backslash. Before
+      // anything else it is a literal character, so that Windows paths survive:
+      // `C:\src\app.ts` used to come back as `C:srcapp.ts`.
+      const escapable = character === '"' || character === "'" || character === "\\" || /\s/.test(character);
+      if (!escapable) {
+        current += "\\";
+      }
+      current += character;
+      escaping = false;
+      pendingBackslash = false;
+      continue;
+    }
+
+    // A backslash only escapes a quote. Treating it as a general escape ate the
+    // separators out of Windows paths: `C:\src\app.ts` became `C:srcapp.ts`.
+    if (character === "\\") {
+      escaping = true;
+      pendingBackslash = true;
+      continue;
+    }
+
+    if (quote) {
+      if (character === quote) {
+        quote = null;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+
+    if (character === "'" || character === "\"") {
+      quote = character;
+      continue;
+    }
+
+    if (/\s/.test(character)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += character;
+  }
+
+  if (escaping || pendingBackslash) {
+    current += "\\";
+  }
+
+  if (current) {
+    tokens.push(current);
+  }
+
+  return tokens;
+}

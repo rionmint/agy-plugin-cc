@@ -12,7 +12,7 @@ import {
   resolveStateDir,
   resolveStateFile,
   saveState
-} from "../plugins/cursor-cc/scripts/lib/state.mjs";
+} from "../plugins/agy-cc/scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -26,7 +26,7 @@ test("resolveStateDir uses a temp-backed per-workspace directory", () => {
 
     assert.equal(stateDir.startsWith(os.tmpdir()), true);
     assert.match(path.basename(stateDir), /.+-[a-f0-9]{16}$/);
-    assert.match(stateDir, /cursor-cc-runs/);
+    assert.match(stateDir, /agy-cc-runs/);
   } finally {
     if (previousPluginDataDir === undefined) {
       delete process.env.CLAUDE_PLUGIN_DATA;

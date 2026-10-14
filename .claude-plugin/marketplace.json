@@ -1,21 +1,21 @@
 {
-  "name": "rionmint-cursor-cc",
+  "name": "rionmint-agy-cc",
   "owner": {
     "name": "rionmint"
   },
   "metadata": {
-    "description": "Cursor CLI <-> Claude Code bridge plugins for review, critique, and delegation.",
-    "version": "0.2.4"
+    "description": "Antigravity CLI (agy) <-> Claude Code bridge plugins for review, critique, delegation, and image generation.",
+    "version": "0.1.0"
   },
   "plugins": [
     {
-      "name": "cursor-cc",
-      "description": "Cursor CLI <-> Claude Code bridge for review, critique, and delegation.",
-      "version": "0.2.4",
+      "name": "agy-cc",
+      "description": "Antigravity CLI (agy) <-> Claude Code bridge for review, critique, delegation, and image generation.",
+      "version": "0.1.0",
       "author": {
         "name": "rionmint"
       },
-      "source": "./plugins/cursor-cc"
+      "source": "./plugins/agy-cc"
     }
   ]
 }

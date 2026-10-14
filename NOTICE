@@ -1,10 +1,12 @@
-cursor-plugin-cc — Cursor CLI bridge for Claude Code
+agy-plugin-cc — Antigravity CLI (agy) bridge for Claude Code
 Copyright 2026 rionmint
 
-This product is a derivative work of the Grok Build plugin for Claude Code
-(https://github.com/xai-org/grok-build-plugin-cc), used under the Apache
-License, Version 2.0. The following notice is reproduced from that project as
-required by section 4(d) of the License:
+This product is a derivative work of cursor-plugin-cc
+(https://github.com/rionmint/cursor-plugin-cc, Copyright 2026 rionmint), which
+is itself a derivative work of the Grok Build plugin for Claude Code
+(https://github.com/xai-org/grok-build-plugin-cc). Both are used under the
+Apache License, Version 2.0. The following notice is reproduced from the Grok
+Build plugin as required by section 4(d) of the License:
 
     ---------------------------------------------------------------------
     Grok Build Plugin for Claude Code
@@ -19,43 +21,48 @@ required by section 4(d) of the License:
 Statement of changes (Apache-2.0 section 4(b))
 ----------------------------------------------
 
-Every file inherited from the upstream project has been modified. The
-substantive changes are:
+The changes cursor-plugin-cc made to the Grok Build plugin are listed in that
+project's NOTICE file. Starting from cursor-plugin-cc 0.2.4 (commit 288c791),
+this project made the following substantive changes:
 
-  * The CLI adapter layer (`scripts/lib/grok.mjs`) was replaced by
-    `scripts/lib/cursor.mjs`, which drives the Cursor CLI (`cursor-agent`)
-    instead of the Grok Build CLI (`grok`).
-  * Working-directory selection moved from `--cwd` to `--workspace`.
-  * Read-only execution moved from `--sandbox read-only` (a sandbox profile
-    that is not enforced on Windows) to Cursor's `--mode ask` / `--mode plan`
-    execution modes.
-  * Headless runs now pass `--trust`, because a headless Cursor run otherwise
-    stops on the workspace-trust prompt.
-  * The reasoning-effort flag (`--effort`) was removed; Cursor carries effort
-    in the model id instead (for example `gpt-5.6-sol-xhigh`).
-  * Structured output no longer uses a `--json-schema` flag, which Cursor does
-    not have; the schema is supplied in the prompt and the response envelope
-    from `--output-format json` is unwrapped before parsing.
-  * Session ids are read back from Cursor's result envelope rather than being
-    assigned before the run.
-  * The Claude-session import command (`grok import`) and its supporting module
-    were removed; the Cursor CLI has no equivalent.
-  * The authentication probe uses `cursor-agent status` (and `CURSOR_API_KEY` /
-    `CURSOR_AUTH_TOKEN`) rather than a models probe.
-  * Binary override renamed from `GROK_BINARY` to `CURSOR_AGENT_BINARY`, and
-    the session environment variable from `GROK_CC_SESSION_ID` to
-    `CURSOR_CC_SESSION_ID`.
-  * All command, agent, skill, and marketplace identifiers were renamed from
-    `grok-build` to `cursor-cc`.
+  * The CLI adapter layer (`scripts/lib/cursor.mjs`) was replaced by
+    `scripts/lib/agy.mjs`, which drives the Antigravity CLI (`agy`) instead of
+    the Cursor CLI (`cursor-agent`).
+  * Read-only execution no longer relies on a CLI mode. agy keeps tool
+    permissions in a global settings file with no per-run override, so every
+    run starts agy with a plugin-owned home directory and a permission profile
+    (read-only / write / write-commands) written into that home under a lock.
+    The permission mode agy reports at start-up is checked, and a run that did
+    not get the profile is stopped.
+  * The prompt moved from stdin (which agy ignores) to an attached `-p=` argument,
+    with a prompt file in an added directory for long prompts and for Windows
+    `.cmd` shims. `--disable-slash-commands` is always passed.
+  * Output is read as `stream-json` events. agy's exit code and `SUCCESS`
+    status are not trusted: refused permissions, print timeouts, empty answers
+    and unknown conversation ids fail the run, and a turn that ended on a
+    refused permission is continued once automatically.
+  * Structured output uses agy's `--json-schema` flag and `structured_output`.
+  * Sessions are agy conversation ids (`--conversation`); the authentication
+    probe is `agy models`.
+  * New options: `--effort`, `--timeout` (agy's `--print-timeout`),
+    `--allow-commands`, and a repeatable `--add-dir`.
+  * New command `/agy-cc:image`, which uses agy's built-in image generator and
+    copies the result out of agy's conversation folder.
+  * Review context is always collected by the bridge (agy cannot run git in a
+    read-only run) with a larger inline budget.
+  * Binary override renamed to `AGY_BINARY`, the session environment variable
+    to `AGY_CC_SESSION_ID`, and all command, agent, skill, and marketplace
+    identifiers renamed from `cursor-cc` to `agy-cc`.
 
 Trademarks
 ----------
 
 This is an unofficial, community-maintained project. It is not affiliated with,
-endorsed by, or sponsored by Anysphere, Inc. (Cursor), xAI, OpenAI, or
-Anthropic. "Cursor", "Grok", and "Claude" are trademarks of their respective
-owners and are used here only to describe interoperability. The Apache License
-does not grant any trademark rights (section 6).
+endorsed by, or sponsored by Google LLC, Anysphere, Inc. (Cursor), xAI, OpenAI,
+or Anthropic. "Antigravity", "Gemini", "Cursor", "Grok", and "Claude" are
+trademarks of their respective owners and are used here only to describe
+interoperability. The Apache License does not grant any trademark rights
+(section 6).
 
 License
 -------

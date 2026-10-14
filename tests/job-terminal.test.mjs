@@ -10,8 +10,8 @@ import {
   resolveJobFile,
   upsertJob,
   writeJobFile
-} from "../plugins/cursor-cc/scripts/lib/state.mjs";
-import { resolveJobKillTargets } from "../plugins/cursor-cc/scripts/lib/tracked-jobs.mjs";
+} from "../plugins/agy-cc/scripts/lib/state.mjs";
+import { resolveJobKillTargets } from "../plugins/agy-cc/scripts/lib/tracked-jobs.mjs";
 
 function withPluginData(fn) {
   const previous = process.env.CLAUDE_PLUGIN_DATA;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseArgs, splitRawArgumentString } from "../plugins/cursor-cc/scripts/lib/args.mjs";
+import { parseArgs, splitRawArgumentString } from "../plugins/agy-cc/scripts/lib/args.mjs";
 
 test("parseArgs handles value, boolean, and alias options", () => {
   const result = parseArgs(["--cwd", "/tmp", "--json", "-m", "model-x", "remaining"], {

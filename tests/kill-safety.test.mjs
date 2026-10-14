@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { processLooksLikeOurs, terminateProcessTree } from "../plugins/cursor-cc/scripts/lib/process.mjs";
+import { processLooksLikeOurs, terminateProcessTree } from "../plugins/agy-cc/scripts/lib/process.mjs";
+import { OUR_PROCESS_MARKERS } from "../plugins/agy-cc/scripts/lib/tracked-jobs.mjs";
 
 // Pids come out of a json file on disk and the operating system reuses them, so
 // a stale record can name whatever now holds that number.
-const OUR_MARKERS = ["cursor-agent", "cursor-bridge.mjs"];
+const OUR_MARKERS = OUR_PROCESS_MARKERS;
 
 function fakeCommandLine(text) {
   return () => ({
@@ -22,7 +23,7 @@ function fakeCommandLine(text) {
 test("a process whose command line matches is recognised as ours", () => {
   const looksOurs = processLooksLikeOurs(1234, OUR_MARKERS, {
     platform: "linux",
-    runCommandImpl: fakeCommandLine("/usr/bin/node /path/to/cursor-bridge.mjs run-worker --job-id x")
+    runCommandImpl: fakeCommandLine("/usr/bin/node /path/to/agy-bridge.mjs run-worker --job-id x")
   });
   assert.equal(looksOurs, true);
 });
@@ -65,7 +66,7 @@ test("terminateProcessTree still signals a pid that is ours", () => {
   const outcome = terminateProcessTree(4321, {
     expect: OUR_MARKERS,
     platform: "linux",
-    runCommandImpl: fakeCommandLine("/usr/bin/node /plugins/cursor-cc/scripts/cursor-bridge.mjs run-worker"),
+    runCommandImpl: fakeCommandLine("/usr/bin/node /plugins/agy-cc/scripts/agy-bridge.mjs run-worker"),
     killImpl: (pid, signal) => {
       signals.push([pid, signal]);
     },
@@ -86,4 +87,20 @@ test("no expectation means no identity check, so existing callers are unchanged"
     isAliveImpl: () => false
   });
   assert.ok(signals.length > 0);
+});
+
+test("the agy binary is recognised on every platform's command line", () => {
+  for (const line of [
+    String.raw`"C:\Users\me\AppData\Local\agy\bin\agy.exe" -p=hello --output-format stream-json`,
+    "/Users/me/.local/bin/agy -p=hello --output-format stream-json",
+    String.raw`node C:\tmp\bin\agy -p=x`
+  ]) {
+    assert.equal(processLooksLikeOurs(1, OUR_MARKERS, { platform: "linux", runCommandImpl: fakeCommandLine(line) }), true, line);
+  }
+});
+
+test("words that merely contain agy are not ours", () => {
+  for (const line of ["/usr/bin/strategy-runner", String.raw`C:\apps\agyfoo.exe`, "/opt/legacy/bin/run"]) {
+    assert.equal(processLooksLikeOurs(1, OUR_MARKERS, { platform: "linux", runCommandImpl: fakeCommandLine(line) }), false, line);
+  }
 });

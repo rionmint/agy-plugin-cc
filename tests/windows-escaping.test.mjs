@@ -4,7 +4,7 @@ import process from "node:process";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCmdLine, quoteWindowsArg, spawnCli } from "../plugins/cursor-cc/scripts/lib/process.mjs";
+import { buildCmdLine, quoteWindowsArg, spawnCli } from "../plugins/agy-cc/scripts/lib/process.mjs";
 import { makeTempDir } from "./helpers.mjs";
 
 // Arguments that have historically broken naive Windows quoting. The `"` cases
