@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Antigravity CLI (agy) <-> Claude Code bridge plugins for review, critique, delegation, and image generation.",
-    "version": "0.1.3"
+    "version": "0.1.4"
   },
   "plugins": [
     {
       "name": "agy-cc",
       "description": "Antigravity CLI (agy) <-> Claude Code bridge for review, critique, delegation, and image generation.",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "author": {
         "name": "rionmint"
       },

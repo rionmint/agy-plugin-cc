@@ -50,7 +50,9 @@ export const EXPECTED_PERMISSION_MODE = "request-review";
  * profile. Nothing is swapped in and out of a shared file, so concurrent runs
  * cannot hand each other the wrong permissions and need no lock. Credentials are
  * not stored in the home directory on Windows, so the signed-in account still
- * applies.
+ * applies. On macOS they are in the login keychain, which is found through the
+ * home directory, so each home links to the user's keychain folder
+ * (`linkMacKeychains`).
  *
  * Rules matter as much as the base mode. In headless mode a tool that has to
  * *ask* is auto-denied and the whole turn ends with an empty answer, while a
@@ -414,6 +416,38 @@ function isLink(filePath) {
 }
 
 /**
+ * On macOS agy keeps its sign-in in the login keychain, and the keychain is
+ * looked up under `$HOME/Library/Keychains`. With HOME set to a profile home
+ * none is found ("A default keychain could not be found") and agy reports the
+ * user as signed out, while a `Library/Keychains` link to the user's own folder
+ * lets it sign in and run (both measured, agy 1.3.5). A link to anywhere else
+ * is replaced; a real directory there is left alone.
+ */
+function linkMacKeychains(home, realHome) {
+  const target = path.join(realHome, "Library", "Keychains");
+  const link = path.join(home, "Library", "Keychains");
+  if (!fs.existsSync(target)) {
+    return;
+  }
+  try {
+    if (fs.readlinkSync(link) === target) {
+      return;
+    }
+    fs.unlinkSync(link);
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ENOENT") {
+      return;
+    }
+  }
+  try {
+    fs.mkdirSync(path.dirname(link), { recursive: true, mode: 0o700 });
+    fs.symlinkSync(target, link, "dir");
+  } catch {
+    // the check's models probe reports the missing sign-in
+  }
+}
+
+/**
  * Make sure a profile's agy home exists and its settings hold that profile.
  *
  * The file is only rewritten when it differs: any difference in a setting,
@@ -426,7 +460,8 @@ function isLink(filePath) {
  *
  * The home also gets a `.gitconfig` that includes the user's own, because agy
  * passes its home on to the commands it runs and git would otherwise lose the
- * user's name, email and safe directories.
+ * user's name, email and safe directories. On macOS it also gets the keychain
+ * link agy needs to find the sign-in.
  */
 export function prepareAgyHome(home, profileName, options = {}) {
   assertProfile(profileName);
@@ -456,6 +491,9 @@ export function prepareAgyHome(home, profileName, options = {}) {
     } catch {
       // git still works without it, only without the user's identity
     }
+  }
+  if ((options.platform ?? process.platform) === "darwin" && path.resolve(realHome) !== path.resolve(home)) {
+    linkMacKeychains(home, realHome);
   }
   return settingsFile;
 }
@@ -636,7 +674,7 @@ export async function runModelsProbe(cwd, options = {}) {
   const home = options.home ?? resolveAgyHome("read-only", env);
   const platform = options.platform ?? process.platform;
 
-  prepareAgyHome(home, "read-only", { realHome: options.realHome, model: options.userModel });
+  prepareAgyHome(home, "read-only", { realHome: options.realHome, model: options.userModel, platform });
   const result = runCommand(binary, ["models"], {
     cwd,
     env: agyChildEnv(env, home, platform),
@@ -977,7 +1015,7 @@ export async function runHeadlessAgent(cwd, options = {}) {
       addDirs: [...(options.addDirs ?? []), ...delivery.addDirs],
       outputFormat: "stream-json"
     });
-    prepareAgyHome(home, profileName, { realHome: options.realHome, model: options.userModel });
+    prepareAgyHome(home, profileName, { realHome: options.realHome, model: options.userModel, platform });
     if (options.resumeConversationId) {
       migratedFrom = syncConversationInto(homeRoot, home, options.resumeConversationId);
       if (migratedFrom) {

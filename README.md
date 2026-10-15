@@ -112,9 +112,11 @@ profile a run needs, and keeps that home's `settings.json` holding that profile 
 - **Your settings are left alone.** The plugin only reads your `model` choice from them, so runs use
   the model you picked. Your `toolPermission`, MCP servers, plugins and rules are not used.
 - **Sign-in still applies.** On Windows the agy sign-in is not stored in the home directory, so the
-  plugin's home sees your account (measured). Whether that holds on macOS and Linux depends on where
-  agy keeps the credential there; `/agy-cc:check` runs `agy models` inside the read-only home and says
-  so if it cannot sign in.
+  plugin's home sees your account (measured). On macOS it is in the login keychain, which is looked
+  up under `$HOME/Library/Keychains`, so each plugin home gets a `Library/Keychains` link to your own
+  keychain folder; without it agy reports you as signed out (both measured). Whether Linux needs
+  anything depends on where agy keeps the credential there; `/agy-cc:check` runs `agy models` inside
+  the read-only home and says so if it cannot sign in.
 - **No shared settings to race over.** Because a profile's settings never change, two runs can start
   at the same moment without one handing the other the wrong permissions, and no lock is needed. agy
   rewrites its settings file atomically and leaves it alone once it is in its own normalised form

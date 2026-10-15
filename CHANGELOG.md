@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4 — 2026-10-15
+
+- **macOS: the sign-in is found again.** agy on macOS keeps its sign-in in the login keychain and
+  finds the keychain under `$HOME/Library/Keychains`. The bridge starts agy with HOME set to a plugin
+  home, where there is no such folder, so `security` reported "A default keychain could not be
+  found", `/agy-cc:check` said "not signed in" although `agy models` worked in the terminal, and runs
+  failed the same way. Each plugin home now gets a `Library/Keychains` link to the user's keychain
+  folder (macOS only; a link to anywhere else is replaced, a real directory there is left alone).
+  Measured on a Mac with agy 1.3.5: with the link, `agy models` lists the models and `agy -p` answers.
+
 ## 0.1.3 — 2026-10-14
 
 - **`--plugin-data` is also read among the other options.** A session that ran the bridge by hand put

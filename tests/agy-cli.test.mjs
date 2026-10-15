@@ -161,6 +161,45 @@ test("prepareAgyHome writes the profile and a gitconfig that includes the user's
   assert.ok(gitconfig.includes(path.join(realHome, ".gitconfig").replace(/\\/g, "/")));
 });
 
+test("prepareAgyHome links the user's keychain folder into the home on macOS only", () => {
+  const probe = makeTempDir();
+  try {
+    fs.symlinkSync(probe, path.join(makeTempDir(), "link"), "dir");
+  } catch {
+    // creating symlinks needs a privilege on some Windows set-ups; nothing to test then
+    return;
+  }
+  const home = path.join(makeTempDir(), "read-only");
+  const realHome = makeTempDir();
+  const keychains = path.join(realHome, "Library", "Keychains");
+  fs.mkdirSync(keychains, { recursive: true });
+  const link = path.join(home, "Library", "Keychains");
+
+  prepareAgyHome(home, "read-only", { realHome, model: null, platform: "linux" });
+  assert.equal(fs.existsSync(link), false, "only macOS finds the sign-in through the home");
+
+  prepareAgyHome(home, "read-only", { realHome, model: null, platform: "darwin" });
+  assert.equal(fs.readlinkSync(link), keychains);
+  prepareAgyHome(home, "read-only", { realHome, model: null, platform: "darwin" });
+  assert.equal(fs.readlinkSync(link), keychains, "a second run keeps the link");
+
+  fs.unlinkSync(link);
+  fs.symlinkSync(probe, link, "dir");
+  prepareAgyHome(home, "read-only", { realHome, model: null, platform: "darwin" });
+  assert.equal(fs.readlinkSync(link), keychains, "a link to somewhere else is replaced");
+
+  const otherHome = path.join(makeTempDir(), "write");
+  fs.mkdirSync(path.join(otherHome, "Library", "Keychains"), { recursive: true });
+  fs.writeFileSync(path.join(otherHome, "Library", "Keychains", "keep.txt"), "x");
+  prepareAgyHome(otherHome, "write", { realHome, model: null, platform: "darwin" });
+  assert.equal(fs.lstatSync(path.join(otherHome, "Library", "Keychains")).isSymbolicLink(), false, "a real directory is left alone");
+  assert.equal(fs.readFileSync(path.join(otherHome, "Library", "Keychains", "keep.txt"), "utf8"), "x");
+
+  const bareHome = path.join(makeTempDir(), "read-only");
+  prepareAgyHome(bareHome, "read-only", { realHome: makeTempDir(), model: null, platform: "darwin" });
+  assert.equal(fs.existsSync(path.join(bareHome, "Library")), false, "no keychain folder, no link");
+});
+
 test("buildHeadlessArgs attaches the prompt to -p and always disables slash commands", () => {
   const args = buildHeadlessArgs({ promptArg: "--looks like a flag", model: "gemini-3.8-flash-low", effort: "high" });
   assert.equal(args[0], "-p=--looks like a flag");
